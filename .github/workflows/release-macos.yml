@@ -39,14 +39,14 @@ jobs:
 
       - name: Stage assets
         run: |
-          cp target/aarch64-apple-darwin/release/slimtoken slimtoken-v${{ inputs.tag }}-aarch64-apple-darwin
-          cp target/x86_64-apple-darwin/release/slimtoken slimtoken-v${{ inputs.tag }}-x86_64-apple-darwin
+          cp target/aarch64-apple-darwin/release/slimtoken slimtoken-${{ inputs.tag }}-aarch64-apple-darwin
+          cp target/x86_64-apple-darwin/release/slimtoken slimtoken-${{ inputs.tag }}-x86_64-apple-darwin
 
       - name: Upload to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release upload ${{ inputs.tag }} \
-            slimtoken-v${{ inputs.tag }}-aarch64-apple-darwin \
-            slimtoken-v${{ inputs.tag }}-x86_64-apple-darwin \
+            slimtoken-${{ inputs.tag }}-aarch64-apple-darwin \
+            slimtoken-${{ inputs.tag }}-x86_64-apple-darwin \
             --clobber
