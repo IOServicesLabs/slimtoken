@@ -1,7 +1,7 @@
 # Fast macOS release builds: one ARM runner builds both Darwin targets.
 # Manual only (workflow_dispatch) so it never burns minutes on normal pushes.
 # Rust can compile x86_64-apple-darwin from an ARM Mac (no Rosetta needed),
-# so one macos-14 job covers Intel and Apple Silicon.
+# so one macos-15 job covers Intel and Apple Silicon.
 name: release-macos
 
 on:
@@ -14,7 +14,7 @@ on:
 
 jobs:
   darwin:
-    runs-on: macos-14
+    runs-on: macos-15
     permissions:
       contents: write
     steps:
