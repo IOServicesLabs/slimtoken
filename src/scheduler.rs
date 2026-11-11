@@ -1916,13 +1916,20 @@ impl SharedLimits {
     fn try_slot(&self) -> Option<SlotGuard> {
         use std::sync::atomic::Ordering;
         let max = self.inner.max_in_flight;
-        self.inner
-            .in_flight
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                (current < max).then_some(current + 1)
-            })
-            .ok()
-            .map(|_| SlotGuard(self.clone()))
+        let in_flight = &self.inner.in_flight;
+        let mut current = in_flight.load(Ordering::Acquire);
+        while current < max {
+            match in_flight.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Some(SlotGuard(self.clone())),
+                Err(observed) => current = observed,
+            }
+        }
+        None
     }
 
     /// Count a request the admission ceiling does not gate (the uncapped
