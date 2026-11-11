@@ -1,0 +1,52 @@
+# Fast macOS release builds: one ARM runner builds both Darwin targets.
+# Manual only (workflow_dispatch) so it never burns minutes on normal pushes.
+# Rust can compile x86_64-apple-darwin from an ARM Mac (no Rosetta needed),
+# so one macos-14 job covers Intel and Apple Silicon.
+name: release-macos
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach binaries to"
+        required: true
+        default: "v0.1.0"
+
+jobs:
+  darwin:
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Cache cargo and both target dirs
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-darwin
+          cache-targets: true
+
+      - name: Add targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Build Apple Silicon
+        run: cargo build --release --features serve --target aarch64-apple-darwin
+
+      - name: Build Intel
+        run: cargo build --release --features serve --target x86_64-apple-darwin
+
+      - name: Stage assets
+        run: |
+          cp target/aarch64-apple-darwin/release/slimtoken slimtoken-v${{ inputs.tag }}-aarch64-apple-darwin
+          cp target/x86_64-apple-darwin/release/slimtoken slimtoken-v${{ inputs.tag }}-x86_64-apple-darwin
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ inputs.tag }} \
+            slimtoken-v${{ inputs.tag }}-aarch64-apple-darwin \
+            slimtoken-v${{ inputs.tag }}-x86_64-apple-darwin \
+            --clobber
