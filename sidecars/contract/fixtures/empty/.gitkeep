@@ -1,0 +1,2 @@
+# Keeps fixtures/empty/ in the working tree. Nothing in this directory
+# is checkable by slimtoken-contract (no .json, .yaml, or .yml files).

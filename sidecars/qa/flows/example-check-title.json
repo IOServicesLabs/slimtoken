@@ -1,0 +1,8 @@
+{
+  "name": "example-check-title",
+  "steps": [
+    { "goto": "/" },
+    { "expectTitle": "Home" },
+    { "screenshot": "home" }
+  ]
+}

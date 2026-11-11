@@ -1,0 +1,34 @@
+{
+  "name": "slimtoken-security",
+  "version": "0.1.0",
+  "description": "Security sidecar for the SlimToken engine: executes an engine-drafted attack corpus against the app over HTTP replay. A finding is a failure. Zero runtime dependencies, zero model tokens.",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "slimtoken-security": "bin/slimtoken-security.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "fixtures/",
+    "README.md"
+  ],
+  "scripts": {
+    "selftest": "node bin/slimtoken-security.mjs help && node --check lib/scan.mjs && node --check lib/corpus.mjs && node test/selftest.mjs"
+  },
+  "keywords": [
+    "slimtoken",
+    "security",
+    "scan",
+    "injection",
+    "corpus"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IOServicesLabs/slimtoken.git",
+    "directory": "sidecars/security"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "name": "slimtoken-judge",
+  "version": "0.1.0",
+  "description": "Judge sidecar for the SlimToken engine: merges every pack JSON twin into one verdict brief, calls one judge model, and parses steer directives back into a plan fragment (one model call per run, by design)",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "slimtoken-judge": "bin/slimtoken-judge.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "test/",
+    "README.md"
+  ],
+  "scripts": {
+    "selftest": "node test/selftest.mjs"
+  },
+  "keywords": [
+    "slimtoken"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IOServicesLabs/slimtoken.git",
+    "directory": "sidecars/judge"
+  }
+}

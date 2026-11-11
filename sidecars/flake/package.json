@@ -1,0 +1,34 @@
+{
+  "name": "slimtoken-flake",
+  "version": "0.1.0",
+  "description": "Flake sidecar for the SlimToken engine: zero-token gate that runs a suite N times and names the tests that are actually nondeterministic (FLAKY) or broken in every run (BROKEN).",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "slimtoken-flake": "bin/slimtoken-flake.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "fixtures/",
+    "test/",
+    "README.md"
+  ],
+  "scripts": {
+    "selftest": "node test/selftest.mjs"
+  },
+  "keywords": [
+    "slimtoken",
+    "flake",
+    "test",
+    "junit"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IOServicesLabs/slimtoken.git",
+    "directory": "sidecars/flake"
+  }
+}

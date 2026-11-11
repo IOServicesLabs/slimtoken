@@ -1,0 +1,31 @@
+{
+  "name": "slimtoken-loop",
+  "version": "0.1.0",
+  "description": "Host-loop sidecar for the SlimToken engine: runs plan -> wave -> pack gates -> verdict in one command. Host helper with no gate of its own; zero runtime dependencies.",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "slimtoken-loop": "bin/slimtoken-loop.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "README.md"
+  ],
+  "scripts": {
+    "selftest": "node bin/slimtoken-loop.mjs help && node --check lib/config.mjs && node --check lib/init.mjs && node --check lib/run.mjs && node test/selftest.mjs"
+  },
+  "keywords": [
+    "slimtoken",
+    "host-loop",
+    "orchestration"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IOServicesLabs/slimtoken.git",
+    "directory": "sidecars/loop"
+  }
+}

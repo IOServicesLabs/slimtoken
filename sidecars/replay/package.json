@@ -1,0 +1,32 @@
+{
+  "name": "slimtoken-replay",
+  "version": "0.1.0",
+  "description": "Replay-verification sidecar for the SlimToken engine: paired per-task diff of two engine run output dirs on one plan (the verification A/B made routine).",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "slimtoken-replay": "bin/slimtoken-replay.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "README.md"
+  ],
+  "scripts": {
+    "selftest": "node test/selftest.mjs"
+  },
+  "keywords": [
+    "slimtoken",
+    "verification",
+    "a-b-test",
+    "regression"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IOServicesLabs/slimtoken.git",
+    "directory": "sidecars/replay"
+  }
+}

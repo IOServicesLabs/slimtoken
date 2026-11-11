@@ -1,0 +1,6 @@
+{
+  "app.title": "Stockroom",
+  "nav.cart": "Cart ({count})",
+  "common.save": "Save {{thing}}",
+  "common.inbox": "Hello {name}, you have %d new messages"
+}

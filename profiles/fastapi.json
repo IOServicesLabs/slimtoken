@@ -1,0 +1,10 @@
+{
+  "base": "python",
+  "name": "fastapi",
+  "markers": ["fastapi", "uvicorn", "starlette", "pydantic"],
+  "example_module": "app/routers/items.py",
+  "example_export": "def list_items() -> list[dict]",
+  "example_test": "tests/test_items_api.py",
+  "suite": "pytest",
+  "planner_rules": "- Target a FastAPI service: route handlers live in app/routers/, pydantic request/response models in app/models.py, app factory (create_app) in app/main.py.\n- Handlers are async only when they await something; otherwise plain def. No blocking calls in async handlers.\n- Business logic lives in app/ services/modules, not in handlers: handlers validate, call, and serialize.\n- Settings come from environment variables via pydantic-settings; never hard-code secrets or ports.\n- Return EXACTLY the fields named in an export's return-shape annotation (serialization tests assert shapes exactly).\n- TestClient (starlette) drives API tests: one test class per router, tmp_path or dependency-overrides for storage."
+}

@@ -1,0 +1,30 @@
+{
+  "name": "slimtoken-research",
+  "version": "0.1.0",
+  "description": "Research sidecar for the SlimToken engine: builds a researcher plan, collects briefs, and gates every citation for free (fetch + string match, zero model tokens)",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "slimtoken-research": "bin/slimtoken-research.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "test/",
+    "README.md"
+  ],
+  "scripts": {
+    "selftest": "node test/selftest.mjs"
+  },
+  "keywords": [
+    "slimtoken"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IOServicesLabs/slimtoken.git",
+    "directory": "sidecars/research"
+  }
+}

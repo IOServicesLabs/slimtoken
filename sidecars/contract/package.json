@@ -1,0 +1,31 @@
+{
+  "name": "slimtoken-contract",
+  "version": "0.1.0",
+  "description": "OpenAPI contract gate for the SlimToken engine: proves a spec resolves before a wave drafts tests from it",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "slimtoken-contract": "bin/slimtoken-contract.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "fixtures/",
+    "test/",
+    "README.md"
+  ],
+  "scripts": {
+    "selftest": "node test/selftest.mjs"
+  },
+  "keywords": [
+    "slimtoken"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IOServicesLabs/slimtoken.git",
+    "directory": "sidecars/contract"
+  }
+}

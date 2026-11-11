@@ -1,0 +1,1 @@
+{"candidates":[{"name":"passes-1","hypothesis":"h","repro":"node -e \"process.exit(0)\""},{"name":"passes-2","hypothesis":"h","repro":"node -e \"process.exit(0)\""}]}

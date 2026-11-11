@@ -1,0 +1,17 @@
+{
+  "objective": "Review the scheduler and propose focused correctness fixes",
+  "steering": [
+    "Prefer actionable findings over general advice",
+    "Keep the final response concise"
+  ],
+  "max_tasks": 32,
+  "plan_only": false,
+  "scheduler": {
+    "max_concurrency": 64,
+    "max_retries": 2,
+    "retry_base_delay_ms": 250,
+    "task_timeout_secs": 300,
+    "max_dependency_chars": 12000,
+    "temperature": 0.2
+  }
+}

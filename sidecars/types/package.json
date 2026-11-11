@@ -1,0 +1,31 @@
+{
+  "name": "slimtoken-types",
+  "version": "0.1.0",
+  "description": "Type binding gate for the SlimToken engine: proves drafted bindings exist for every spec schema and compile",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "slimtoken-types": "bin/slimtoken-types.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "fixtures/",
+    "test/",
+    "README.md"
+  ],
+  "scripts": {
+    "selftest": "node test/selftest.mjs"
+  },
+  "keywords": [
+    "slimtoken"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IOServicesLabs/slimtoken.git",
+    "directory": "sidecars/types"
+  }
+}

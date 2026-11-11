@@ -1,0 +1,8 @@
+{
+  "ok": true,
+  "files": [
+    { "file": "calc.mjs", "covered": 7, "total": 7, "pct": 100 },
+    { "file": "str.mjs", "covered": 3, "total": 3, "pct": 100 }
+  ],
+  "total": { "covered": 10, "total": 10, "pct": 100 }
+}

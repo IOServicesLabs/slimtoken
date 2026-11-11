@@ -1,0 +1,31 @@
+{
+  "name": "slimtoken-fuzz",
+  "version": "0.1.0",
+  "description": "In-process fuzz campaign sidecar for the SlimToken engine: mutates engine-drafted seed corpora against a target's fuzz(input) entry point and reports crashes. Zero tokens, zero runtime dependencies.",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "slimtoken-fuzz": "bin/slimtoken-fuzz.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "README.md"
+  ],
+  "scripts": {
+    "selftest": "node bin/slimtoken-fuzz.mjs help && node --check lib/fuzz.mjs && node --check lib/report.mjs && node test/selftest.mjs"
+  },
+  "keywords": [
+    "fuzz",
+    "fuzzing",
+    "crash",
+    "slimtoken"
+  ],
+  "repository": {
+    "type": "git",
+    "directory": "sidecars/fuzz"
+  }
+}

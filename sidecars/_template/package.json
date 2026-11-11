@@ -1,0 +1,29 @@
+{
+  "name": "slimtoken-<name>",
+  "version": "0.1.0",
+  "description": "<one line: what this pack gates for the SlimToken engine>",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "slimtoken-<name>": "bin/slimtoken-<name>.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "README.md"
+  ],
+  "scripts": {
+    "selftest": "node bin/slimtoken-<name>.mjs help && node --check lib/gate.mjs"
+  },
+  "keywords": [
+    "slimtoken"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IOServicesLabs/slimtoken.git",
+    "directory": "sidecars/<name>"
+  }
+}

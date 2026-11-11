@@ -1,0 +1,8 @@
+openapi: 3.0.0
+info:
+  title: YAML API
+  version: 1.0.0
+paths:
+  /pets:
+    get:
+      summary: List pets

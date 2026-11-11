@@ -1,0 +1,38 @@
+# API keys — never commit these
+/.muse-key
+/.deepseek-key
+.env
+.env.*
+
+# Engine run outputs
+/slimtoken-out
+/slimtoken-out*/
+/slimtoken-runs
+*.log
+
+# Build and dependency artifacts
+node_modules/
+target/
+dist/
+build/
+out/
+/coverage/
+.gradle/
+.expo/
+.next/
+.turbo/
+.parcel-cache/
+.cache/
+.dart_tool/
+Pods/
+DerivedData/
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+.swarm/
+*.tsbuildinfo
+
+# Tool state
+.claude/
+.DS_Store

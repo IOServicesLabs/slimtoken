@@ -1,0 +1,2 @@
+# This file keeps the empty-bindings fixture directory on disk. The
+# selftest points the gate here and expects exit 2 (no binding files).

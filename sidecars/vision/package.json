@@ -1,0 +1,32 @@
+{
+  "name": "slimtoken-vision",
+  "version": "0.1.0",
+  "description": "Vision judge pack for the SlimToken engine: scores qa-pack screenshots against a host rubric with a vision model (spends tokens by design, budget-capped).",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "slimtoken-vision": "bin/slimtoken-vision.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "README.md"
+  ],
+  "scripts": {
+    "selftest": "node test/selftest.mjs"
+  },
+  "keywords": [
+    "slimtoken",
+    "vision",
+    "screenshots",
+    "aesthetic"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IOServicesLabs/slimtoken.git",
+    "directory": "sidecars/vision"
+  }
+}

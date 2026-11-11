@@ -1,0 +1,31 @@
+{
+  "name": "slimtoken-i18n",
+  "version": "0.1.0",
+  "description": "i18n parity gate for the SlimToken engine: proves locale files agree on keys, values, and placeholders after a translation wave",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "slimtoken-i18n": "bin/slimtoken-i18n.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "fixtures/",
+    "test/",
+    "README.md"
+  ],
+  "scripts": {
+    "selftest": "node test/selftest.mjs"
+  },
+  "keywords": [
+    "slimtoken"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IOServicesLabs/slimtoken.git",
+    "directory": "sidecars/i18n"
+  }
+}

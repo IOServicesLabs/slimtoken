@@ -1,0 +1,20 @@
+{
+  "Widget": {
+    "type": "object",
+    "properties": {
+      "id": { "type": "string" }
+    }
+  },
+  "WidgetList": {
+    "type": "object",
+    "properties": {
+      "items": { "type": "array", "items": { "$ref": "#/Widget" } }
+    }
+  },
+  "Error": {
+    "type": "object",
+    "properties": {
+      "message": { "type": "string" }
+    }
+  }
+}

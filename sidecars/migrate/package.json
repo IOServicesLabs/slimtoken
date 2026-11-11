@@ -1,0 +1,33 @@
+{
+  "name": "slimtoken-migrate",
+  "version": "0.1.0",
+  "description": "Migration gate sidecar for the SlimToken engine: zero-token proof that a migration wave left every file compiling (py_compile, node --check, cargo check, npm build).",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "slimtoken-migrate": "bin/slimtoken-migrate.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "fixtures/",
+    "test/",
+    "README.md"
+  ],
+  "scripts": {
+    "selftest": "node test/selftest.mjs"
+  },
+  "keywords": [
+    "migrate",
+    "compile-gate",
+    "slimtoken"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IOServicesLabs/slimtoken.git",
+    "directory": "sidecars/migrate"
+  }
+}

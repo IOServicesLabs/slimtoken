@@ -1,0 +1,6 @@
+{
+  "app.title": "Salle de stock",
+  "nav.cart": "Panier ({count})",
+  "common.save": "Enregistrer {{thing}}",
+  "common.inbox": "Bonjour {name}, vous avez %d nouveaux messages"
+}

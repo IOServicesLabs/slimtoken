@@ -1,0 +1,2 @@
+This directory holds no markdown files on purpose.
+The gate must exit 2 when it finds nothing to check.

@@ -1,0 +1,4 @@
+[
+  { "name": "Phone 6.1in", "width": 390, "height": 844, "scheme": "dark", "ua": "Mozilla/5.0 (AuditExt Phone)" },
+  { "name": "Tablet 10in", "width": 820, "height": 1180, "scale": 2 }
+]

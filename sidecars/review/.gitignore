@@ -1,0 +1,5 @@
+# Build artifacts from running the rust fixtures through cargo.
+fixtures/rust-bad/target/
+fixtures/rust-good/target/
+fixtures/rust-bad/Cargo.lock
+fixtures/rust-good/Cargo.lock

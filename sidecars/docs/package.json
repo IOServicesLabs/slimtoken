@@ -1,0 +1,34 @@
+{
+  "name": "slimtoken-docs",
+  "version": "0.1.0",
+  "description": "Docs drift gate for the SlimToken engine: zero-dependency link, fence, and style checks for drafted markdown docs.",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "slimtoken-docs": "bin/slimtoken-docs.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "fixtures/",
+    "test/",
+    "README.md"
+  ],
+  "scripts": {
+    "selftest": "node test/selftest.mjs"
+  },
+  "keywords": [
+    "slimtoken",
+    "docs",
+    "markdown",
+    "link-check"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IOServicesLabs/slimtoken.git",
+    "directory": "sidecars/docs"
+  }
+}

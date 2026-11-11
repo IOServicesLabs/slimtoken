@@ -1,0 +1,53 @@
+{
+  "objective": "Assess a proposed parallel coding-agent design",
+  "tasks": [
+    {
+      "id": "scheduler-review",
+      "title": "Scheduler review",
+      "prompt": "List the scheduler invariants and identify two concurrency failure modes.",
+      "deps": [],
+      "max_tokens": 300,
+      "temperature": 0.1
+    },
+    {
+      "id": "workspace-review",
+      "title": "Workspace review",
+      "prompt": "Propose an isolated-workspace and patch-integration strategy.",
+      "deps": [],
+      "max_tokens": 300,
+      "temperature": 0.1
+    },
+    {
+      "id": "metrics-review",
+      "title": "Metrics review",
+      "prompt": "Define metrics for throughput, accepted goodput, latency, and overload.",
+      "deps": [],
+      "max_tokens": 300,
+      "temperature": 0.1
+    },
+    {
+      "id": "test-review",
+      "title": "Test review",
+      "prompt": "Propose deterministic scheduler tests and a local-server load test.",
+      "deps": [],
+      "max_tokens": 300,
+      "temperature": 0.1
+    },
+    {
+      "id": "risk-synthesis",
+      "title": "Risk synthesis",
+      "prompt": "Combine scheduler and workspace findings into a prioritized risk register.",
+      "deps": ["scheduler-review", "workspace-review"],
+      "max_tokens": 400,
+      "temperature": 0.1
+    },
+    {
+      "id": "final-review",
+      "title": "Final integrated review",
+      "prompt": "Return a concise integrated assessment with implementation priorities and acceptance tests.",
+      "deps": ["risk-synthesis", "metrics-review", "test-review"],
+      "max_tokens": 600,
+      "temperature": 0.1
+    }
+  ]
+}

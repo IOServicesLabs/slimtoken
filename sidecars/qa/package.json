@@ -1,0 +1,33 @@
+{
+  "name": "slimtoken-qa",
+  "version": "0.1.0",
+  "description": "Browser QA sidecar for the SlimToken engine: zero-dependency CDP smoke and interaction gates, plus a zero-token syntax gate for generated artifacts.",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "slimtoken-qa": "bin/slimtoken-qa.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "flows/",
+    "README.md"
+  ],
+  "scripts": {
+    "selftest": "node bin/slimtoken-qa.mjs help && node --check lib/qa-smoke.mjs && node --check lib/qa-flow.mjs && node --check lib/qa-cdp.mjs && node --check lib/validate.mjs && node test/audit-ext.mjs"
+  },
+  "keywords": [
+    "qa",
+    "chrome-devtools-protocol",
+    "smoke-test",
+    "slimtoken"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IOServicesLabs/slimtoken.git",
+    "directory": "sidecars/qa"
+  }
+}

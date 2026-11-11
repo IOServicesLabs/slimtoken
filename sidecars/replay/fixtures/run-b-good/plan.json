@@ -1,0 +1,10 @@
+{
+  "objective": "Acceptance wave for the digest benchmark app",
+  "tasks": [
+    { "id": "t1", "title": "Scaffold the digest pipeline", "prompt": "Scaffold the digest pipeline entry point.", "deps": [] },
+    { "id": "t2", "title": "Implement the parser", "prompt": "Implement the digest parser module.", "deps": ["t1"] },
+    { "id": "t3", "title": "Wire the renderer", "prompt": "Wire the renderer to the parser output.", "deps": ["t2"] },
+    { "id": "t4", "title": "Add the CLI flags", "prompt": "Add CLI flags for output format.", "deps": ["t1"] },
+    { "id": "t5", "title": "Publish the report", "prompt": "Publish the rendered report (skipped when t3 fails).", "deps": ["t3"] }
+  ]
+}

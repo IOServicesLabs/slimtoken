@@ -1,0 +1,7 @@
+{
+  "ok": false,
+  "summary": "test gate: 1/2 suites passed",
+  "suites": [
+    { "stack": "node", "command": "node --test", "passed": 1, "failed": 1, "error": "not ok 2 add wrong" }
+  ]
+}

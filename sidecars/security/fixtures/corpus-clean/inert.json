@@ -1,0 +1,7 @@
+{
+  "name": "inert-echo",
+  "method": "POST",
+  "path": "/echo",
+  "body": "ping",
+  "markers": ["xyzzy-no-such-token-7f19d"]
+}

@@ -1,0 +1,29 @@
+{
+  "name": "slimtoken-triage",
+  "version": "0.1.0",
+  "description": "Failure triage sidecar for the SlimToken engine: draft K candidate diagnoses in one model call, keep the one whose zero-token repro fails",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "slimtoken-triage": "bin/slimtoken-triage.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "README.md"
+  ],
+  "scripts": {
+    "selftest": "node test/selftest.mjs"
+  },
+  "keywords": [
+    "slimtoken"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IOServicesLabs/slimtoken.git",
+    "directory": "sidecars/triage"
+  }
+}

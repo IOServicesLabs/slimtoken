@@ -1,0 +1,7 @@
+{
+  "name": "reflect",
+  "method": "POST",
+  "path": "/echo",
+  "body": "<script>{{7*7}}</script>",
+  "markers": ["49", "<script>"]
+}

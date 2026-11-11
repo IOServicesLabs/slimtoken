@@ -1,0 +1,33 @@
+{
+  "name": "slimtoken-trace",
+  "version": "0.1.0",
+  "description": "Trace analysis sidecar for the SlimToken engine: zero-dependency parser for trace.jsonl that turns anomalies into a SchedulerConfig tuning brief.",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "slimtoken-trace": "bin/slimtoken-trace.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "fixtures/",
+    "README.md"
+  ],
+  "scripts": {
+    "selftest": "node bin/slimtoken-trace.mjs help && node --check lib/analyze.mjs && node --check lib/report.mjs && node test/selftest.mjs"
+  },
+  "keywords": [
+    "slimtoken",
+    "trace",
+    "scheduler",
+    "analysis"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IOServicesLabs/slimtoken.git",
+    "directory": "sidecars/trace"
+  }
+}

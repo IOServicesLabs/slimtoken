@@ -1,0 +1,32 @@
+{
+  "name": "slimtoken-ledger",
+  "version": "0.1.0",
+  "description": "Ledger sidecar for the SlimToken engine: zero-token host helper that appends one JSONL row per run and prints paired-arm A/B deltas with regression exit codes.",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "slimtoken-ledger": "bin/slimtoken-ledger.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "README.md"
+  ],
+  "scripts": {
+    "selftest": "node test/selftest.mjs"
+  },
+  "keywords": [
+    "slimtoken",
+    "ledger",
+    "ab-test",
+    "benchmark"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IOServicesLabs/slimtoken.git",
+    "directory": "sidecars/ledger"
+  }
+}

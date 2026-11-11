@@ -1,0 +1,25 @@
+{
+  "candidates": [
+    {
+      "name": "exit-nonzero",
+      "hypothesis": "the repro command fails as expected",
+      "repro": "node -e \"process.exit(1)\""
+    },
+    {
+      "name": "exit-zero",
+      "hypothesis": "a passing check demonstrates nothing",
+      "repro": "node -e \"process.exit(0)\""
+    },
+    {
+      "name": "no-such-command",
+      "hypothesis": "the tool is missing",
+      "repro": "definitely-not-a-command-xyz"
+    }
+  ],
+  "model": "mock",
+  "usage": {
+    "prompt_tokens": 10,
+    "completion_tokens": 20,
+    "total_tokens": 30
+  }
+}

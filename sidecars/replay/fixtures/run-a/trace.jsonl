@@ -1,0 +1,14 @@
+{"event":"run_start","elapsed_ms":0,"fields":{"tasks":5,"primes":0}}
+{"event":"task_start","elapsed_ms":1,"fields":{"task_id":"t1","depth":0,"queue_weight":1,"max_tokens":4096}}
+{"event":"task_complete","elapsed_ms":10001,"fields":{"task_id":"t1","status":"succeeded","attempts":1,"duration_ms":10000,"input_tokens":5000,"output_tokens":2000,"cached_input_tokens":1000}}
+{"event":"task_start","elapsed_ms":10002,"fields":{"task_id":"t2","depth":1,"queue_weight":2,"max_tokens":4096}}
+{"event":"task_retry","elapsed_ms":16002,"fields":{"task_id":"t2","attempt":1,"error":"provider timeout","delay_ms":200,"output_tokens":null}}
+{"event":"task_complete","elapsed_ms":22003,"fields":{"task_id":"t2","status":"succeeded","attempts":2,"duration_ms":12000,"input_tokens":6000,"output_tokens":3000,"cached_input_tokens":0}}
+{"event":"task_start","elapsed_ms":22004,"fields":{"task_id":"t3","depth":2,"queue_weight":3,"max_tokens":4096}}
+{"event":"task_retry","elapsed_ms":26004,"fields":{"task_id":"t3","attempt":1,"error":"429 rate limit","delay_ms":500,"output_tokens":300}}
+{"event":"task_retry","elapsed_ms":31004,"fields":{"task_id":"t3","attempt":2,"error":"provider timeout","delay_ms":800,"output_tokens":null}}
+{"event":"task_complete","elapsed_ms":37005,"fields":{"task_id":"t3","status":"failed","attempts":3,"duration_ms":15000,"error":"max attempts exceeded"}}
+{"event":"task_start","elapsed_ms":1002,"fields":{"task_id":"t4","depth":1,"queue_weight":1,"max_tokens":4096}}
+{"event":"task_complete","elapsed_ms":9003,"fields":{"task_id":"t4","status":"succeeded","attempts":1,"duration_ms":8000,"input_tokens":3000,"output_tokens":1500,"cached_input_tokens":500}}
+{"event":"task_complete","elapsed_ms":37006,"fields":{"task_id":"t5","status":"skipped","error":"ancestor t3 failed"}}
+{"event":"run_end","elapsed_ms":61000,"fields":{"succeeded":3,"failed":1,"skipped":1,"peak_concurrency":2,"output_tokens":7500}}

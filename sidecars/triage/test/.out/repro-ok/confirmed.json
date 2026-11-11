@@ -1,0 +1,12 @@
+{
+  "ok": true,
+  "confirmed": [
+    {
+      "name": "exit-nonzero",
+      "hypothesis": "the repro command fails as expected",
+      "repro": "node -e \"process.exit(1)\"",
+      "exitCode": 1,
+      "stderrExcerpt": ""
+    }
+  ]
+}

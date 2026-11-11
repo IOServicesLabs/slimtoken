@@ -1,0 +1,2 @@
+This directory holds no test suite on purpose. The slimtoken-flake
+selftest points the probe here and expects exit 2 (no measurable suite).
