@@ -1,4 +1,7 @@
-use crate::client::{BudgetExhaustedError, CompletionRequest, ModelClient, RateLimitedError};
+use crate::client::{
+    BudgetExhaustedError, CompletionRequest, ModelClient, OverloadedError, PermanentError,
+    RateLimitedError,
+};
 use crate::control::{RunControl, TaskProgressStatus};
 use crate::controller::{ConcurrencyController, ControllerConfig, ControllerStats, WindowEvent};
 use crate::dag::{Plan, Task};
@@ -156,6 +159,32 @@ pub struct SchedulerConfig {
     /// budget) are admitted earliest. Opt-in (`None` keeps the max_tokens
     /// key, which orders identically to all earlier builds).
     pub duration_profile: Option<DurationProfile>,
+    /// Feed the adaptive controller a health sample the moment a request's
+    /// first token arrives, instead of only when the request completes. A
+    /// wave of long tasks otherwise gives the controller nothing to evaluate
+    /// until its first task finishes, so the limit sits at the cold-start
+    /// seed for a whole task duration. Needs a client that calls
+    /// `report_first_token` (the shipped OpenAI-compatible client does);
+    /// requests from other clients keep reporting at completion. Default on
+    /// (A/B, 48-task wave: -14% wall on DeepSeek, neutral on Muse); it only
+    /// acts when `adaptive` is on. `false` keeps completion-time sampling.
+    pub controller_early_ttft: bool,
+    /// First-token watchdog (opt-in): abandon and retry an attempt that has
+    /// produced no first token after this multiple of the wave's median
+    /// time-to-first-token (never sooner than 5s). Arms once four first
+    /// tokens were observed, so it needs a client that calls
+    /// `report_first_token`. A stuck request has billed no output yet, and
+    /// the wave's wall is its slowest task. `None` disables.
+    pub first_token_watchdog: Option<f64>,
+    /// Append every succeeded task's output to this JSONL file as it lands
+    /// (`{"task_id","prompt_hash","output"}`), so an interrupted run keeps
+    /// what it already paid for; `resume_plan_from_journal` turns a journal
+    /// back into precomputed outputs. `None` (default) writes nothing.
+    pub journal_path: Option<std::path::PathBuf>,
+    /// Rate and concurrency budgets shared with other runs on the same
+    /// provider (see `SharedLimits`). `None` (default): this run owns its
+    /// own pace buckets, as a single-run process always has.
+    pub shared_limits: Option<SharedLimits>,
 }
 
 impl SchedulerConfig {
@@ -182,6 +211,12 @@ impl SchedulerConfig {
         }
         if self.repair_inject_after_ms.is_some() && self.max_concurrent_repairs.is_none() {
             bail!("repair_inject_after_ms requires max_concurrent_repairs");
+        }
+        if self
+            .first_token_watchdog
+            .is_some_and(|factor| !(factor.is_finite() && factor >= 1.0))
+        {
+            bail!("first_token_watchdog must be a finite factor of at least 1.0");
         }
         if self.adaptive {
             self.controller
@@ -232,6 +267,10 @@ impl Default for SchedulerConfig {
             max_tokens_profile: None,
             duration_profile: None,
             planning: None,
+            controller_early_ttft: true,
+            first_token_watchdog: None,
+            journal_path: None,
+            shared_limits: None,
         }
     }
 }
@@ -271,6 +310,63 @@ pub struct TaskRecord {
     pub finish_reason: Option<String>,
     pub usage_is_estimated: bool,
     pub time_to_first_token_ms: Option<u64>,
+    /// Why the task failed, on failed tasks; `None` otherwise.
+    pub failure_class: Option<FailureClass>,
+    /// Tokens billed for attempts whose output was thrown away: truncated or
+    /// unclosed-fence attempts, budget-exhausted attempts, and completions
+    /// the artifact validator rejected. Counted where the provider reported
+    /// usage; transport errors and timeouts report none. These sit OUTSIDE
+    /// `input_tokens`/`output_tokens`, which cover the kept completion only.
+    pub wasted_input_tokens: u64,
+    pub wasted_output_tokens: u64,
+}
+
+impl TaskRecord {
+    /// Record for a task that never produced a model result of its own
+    /// (skipped behind a failed ancestor, or cancelled).
+    fn unrun(id: &str, title: &str, status: TaskStatus, error: String) -> Self {
+        Self {
+            id: id.to_string(),
+            title: title.to_string(),
+            status,
+            output: None,
+            error: Some(error),
+            attempts: 0,
+            duration_ms: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            reasoning_tokens: None,
+            cached_input_tokens: None,
+            provider: None,
+            rate_limited: false,
+            finish_reason: None,
+            usage_is_estimated: false,
+            time_to_first_token_ms: None,
+            failure_class: None,
+            wasted_input_tokens: 0,
+            wasted_output_tokens: 0,
+        }
+    }
+}
+
+/// Why an attempt failed. The class decides who reacts: only capacity-shaped
+/// failures move the concurrency controller, only content failures get the
+/// error fed back to the model, and permanent failures stop at once.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureClass {
+    /// A rate wall (typed 429): a RATE signal for the pace tuner.
+    RateLimited,
+    /// The provider or the network failed the request: 5xx, timeouts,
+    /// dropped or stalled streams, empty completions. A capacity signal.
+    Transport,
+    /// The model answered, and the answer was unusable: truncated at the
+    /// output budget, an unclosed fence, a validator rejection. Says nothing
+    /// about provider capacity.
+    Content,
+    /// The request will fail the same way again (auth, unknown model,
+    /// malformed or oversized body). Never retried, never repaired.
+    Permanent,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -324,6 +420,11 @@ pub struct RunReport {
     pub total_reasoning_tokens: Option<u64>,
     /// Sum of prefix-cache hits across tasks; `None` when never reported.
     pub total_cached_input_tokens: Option<u64>,
+    /// Tokens billed for discarded attempts across the wave (see
+    /// `TaskRecord.wasted_input_tokens`). Outside the `total_*_tokens` above,
+    /// so the full bill is their sum.
+    pub total_wasted_input_tokens: u64,
+    pub total_wasted_output_tokens: u64,
     pub mean_time_to_first_token_ms: Option<f64>,
     pub aggregate_output_tokens_per_second: f64,
     pub aggregate_total_tokens_per_second: f64,
@@ -381,14 +482,22 @@ struct TaskSuccess {
     /// Failed attempts that preceded the successful one, in order (
     /// trace). Empty for first-attempt successes.
     retries: Vec<TaskRetry>,
+    /// Tokens billed for the failed attempts before this one.
+    wasted_input_tokens: u64,
+    wasted_output_tokens: u64,
 }
 
 #[derive(Debug)]
 struct TaskFailure {
     error: String,
+    /// Class of the final failed attempt.
+    class: FailureClass,
     attempts: u32,
     duration: Duration,
     retries: Vec<TaskRetry>,
+    /// Tokens billed for this task's discarded attempts.
+    wasted_input_tokens: u64,
+    wasted_output_tokens: u64,
     /// True when at least one attempt failed with a typed 429. A 429
     /// is a RATE signal, not a task error or a concurrency signal.
     rate_limited: bool,
@@ -529,6 +638,7 @@ async fn run_concurrency_probe(
     max_concurrency: usize,
     reasoning_effort: Option<String>,
     prompt_cache_key: Option<String>,
+    call_timeout: Duration,
 ) -> (usize, Vec<ProbeStep>) {
     let mut steps = Vec::new();
     let mut baseline_ttft: Option<u64> = None;
@@ -546,17 +656,20 @@ async fn run_concurrency_probe(
         let mut best_ttft: Option<u64> = None;
         for _ in 0..probe.repetitions.max(1) {
             let requests = (0..width).map(|variant| {
-                client.complete(CompletionRequest {
-                    system: WORKER_SYSTEM_PROMPT.to_string(),
-                    shared_context: None,
-                    user: format!("{}\nvariant {variant}", probe.prompt),
-                    max_tokens: 1,
-                    temperature: 0.0,
-                    reasoning_effort: reasoning_effort.clone(),
-                    prompt_cache_key: prompt_cache_key.clone(),
-                    allow_empty: true,
-                    response_format: None,
-                })
+                bounded(
+                    call_timeout,
+                    client.complete(CompletionRequest {
+                        system: WORKER_SYSTEM_PROMPT.to_string(),
+                        shared_context: None,
+                        user: format!("{}\nvariant {variant}", probe.prompt),
+                        max_tokens: 1,
+                        temperature: 0.0,
+                        reasoning_effort: reasoning_effort.clone(),
+                        prompt_cache_key: prompt_cache_key.clone(),
+                        allow_empty: true,
+                        response_format: None,
+                    }),
+                )
             });
             let started = Instant::now();
             let results = futures::future::join_all(requests).await;
@@ -729,13 +842,13 @@ pub async fn execute_plan_with_control(
     let mut in_flight = FuturesUnordered::new();
     let mut peak_concurrency = 0usize;
     // Tasks given their one in-run repair, with the attempts already spent.
-    let mut repaired = HashMap::<String, u32>::new();
+    let mut repaired = HashMap::<String, RepairCarry>::new();
     // repairs a capped config queued instead of started (FIFO), with
     // the in-flight repair count kept separately so the drain pass can
     // enforce max_concurrent_repairs. The Instant is the queue time: 's
     // injection bound reads it to decide when a patient repair may take a
     // slot fresh tasks would otherwise claim.
-    let mut pending_repairs: std::collections::VecDeque<(String, String, u32, Instant)> =
+    let mut pending_repairs: std::collections::VecDeque<QueuedRepair> =
         std::collections::VecDeque::new();
     let mut in_flight_repairs = 0usize;
     let started = Instant::now();
@@ -785,6 +898,7 @@ pub async fn execute_plan_with_control(
             config.max_concurrency,
             config.reasoning_effort.clone(),
             config.prompt_cache_key.clone(),
+            config.task_timeout,
         )
         .await;
         controller_config.cold_hint_cap = width;
@@ -819,7 +933,27 @@ pub async fn execute_plan_with_control(
     } else {
         Vec::new()
     };
-    let mut pace = config.max_starts_per_minute.map(Pace::new);
+    // Admission budgets: the starts-per-minute bucket, the TPM bucket and the
+    // in-flight ceiling. A host running several runs against one provider
+    // hands every run the same `SharedLimits`; a lone run builds its own.
+    let limits = config.shared_limits.clone().unwrap_or_else(|| {
+        SharedLimits::new(
+            usize::MAX,
+            config.max_starts_per_minute,
+            config.max_tokens_per_minute,
+        )
+    });
+    // First-token reports and failed attempts, sent from inside the task
+    // futures while their requests are still running.
+    let (signal_tx, mut signal_rx) = tokio::sync::mpsc::unbounded_channel::<AttemptSignal>();
+    // Tasks whose current attempt already gave the controller its
+    // first-token sample; their completion must not count it twice.
+    let mut early_ttft_seen = HashSet::<String>::new();
+    let mut journal = config
+        .journal_path
+        .as_deref()
+        .map(JournalWriter::create)
+        .transpose()?;
     // opt-in retry gate. A second token bucket at the same configured
     // start rate, shared by every task's retries: a 429-triggered retry
     // consumes a gate token (paced at the tuner's current multiplier when
@@ -831,9 +965,23 @@ pub async fn execute_plan_with_control(
         .then(|| config.max_starts_per_minute.map(Pace::new))
         .flatten()
         .map(|pace| Arc::new(std::sync::Mutex::new(pace)));
+    // Everything a task's attempt loop needs, cloned into each task future.
+    // Validation runs inside the future, never in this dispatcher loop: a
+    // validator is a shell spawn, and awaiting it here stalled admission,
+    // completion handling, cancellation, and every open stream's reads.
+    let attempt_context = AttemptContext {
+        client: Arc::clone(&client),
+        max_retries: config.max_retries,
+        retry_base_delay: config.retry_base_delay,
+        task_timeout: config.task_timeout,
+        rate_gate: retry_gate.clone(),
+        validator: config.validator.clone(),
+        signals: signal_tx.clone(),
+        ttft: Arc::new(std::sync::Mutex::new(Vec::new())),
+        watchdog_factor: config.first_token_watchdog,
+    };
     // TPM pacing: per-task reserved estimates (input chars/4 +
     // max_tokens reserve), refunded to actual output on completion.
-    let mut tpm_pace = config.max_tokens_per_minute.map(TpmPace::new);
     let mut tpm_reserved = HashMap::<String, (u64, u64)>::new();
     // rate auto-tune: learns the provider's effective rpm/tpm from
     // typed 429 observations and scales both pace buckets. `None` (flag off)
@@ -849,21 +997,25 @@ pub async fn execute_plan_with_control(
     if !plan.cache_primes.is_empty() {
         let primes_started = Instant::now();
         let prime_requests = plan.cache_primes.iter().map(|prime| {
-            client.complete(CompletionRequest {
-                system: WORKER_SYSTEM_PROMPT.to_string(),
-                shared_context: Some(shared_context.clone()),
-                // No trailing newline: the worker message is
-                // `# Assignment\n{task.prompt}\n...`, so the prime must be
-                // `# Assignment\n{prime}` — a true byte-prefix only if prime
-                // is itself a byte-prefix of task.prompt (planners' heads).
-                user: format!("# Assignment\n{prime}"),
-                max_tokens: 1,
-                temperature: 0.0,
-                reasoning_effort: config.reasoning_effort.clone(),
-                prompt_cache_key: config.prompt_cache_key.clone(),
-                allow_empty: true,
-                response_format: None,
-            })
+            bounded(
+                config.task_timeout,
+                client.complete(CompletionRequest {
+                    system: WORKER_SYSTEM_PROMPT.to_string(),
+                    shared_context: Some(shared_context.clone()),
+                    // No trailing newline: the worker message is
+                    // `# Assignment\n{task.prompt}\n...`, so the prime must
+                    // be `# Assignment\n{prime}` — a true byte-prefix only if
+                    // prime is itself a byte-prefix of task.prompt (planners'
+                    // heads).
+                    user: format!("# Assignment\n{prime}"),
+                    max_tokens: 1,
+                    temperature: 0.0,
+                    reasoning_effort: config.reasoning_effort.clone(),
+                    prompt_cache_key: config.prompt_cache_key.clone(),
+                    allow_empty: true,
+                    response_format: None,
+                }),
+            )
         });
         for result in futures::future::join_all(prime_requests).await {
             if let Err(error) = result {
@@ -898,58 +1050,60 @@ pub async fn execute_plan_with_control(
     // slots, never more than max_concurrent_repairs at once, and only when
     // the admission ceiling leaves room.
     macro_rules! drain_repairs {
-        ($admission_cap:expr) => {{
+        ($admission_cap:expr, $pace_wait:ident) => {{
             if let Some(repair_cap) = config.max_concurrent_repairs {
                 loop {
                     if in_flight_repairs >= repair_cap || in_flight.len() >= $admission_cap {
                         break;
                     }
-                    let Some((repair_id, repair_error, repair_attempts, _queued_at)) =
-                        pending_repairs.pop_front()
-                    else {
+                    if pending_repairs.is_empty() {
+                        break;
+                    }
+                    let Some(slot) = limits.try_slot() else {
+                        $pace_wait = Some(SLOT_POLL);
                         break;
                     };
+                    let Some(queued) = pending_repairs.pop_front() else {
+                        break;
+                    };
+                    let repair_id = queued.id;
                     let Some(task) = tasks.get(&repair_id) else {
                         continue;
                     };
-                    let request =
-                        repair_request(task, &repair_error, &outputs, &shared_context, &config);
+                    let request = repair_request(
+                        task,
+                        &queued.error,
+                        queued.class,
+                        &outputs,
+                        &shared_context,
+                        &config,
+                    );
                     if let Some(trace) = trace.as_mut() {
                         trace.emit(
                             "repair_start",
                             millis(started.elapsed()),
                             serde_json::json!({
                                 "task_id": &repair_id,
-                                "attempts": repair_attempts,
-                                "error": &repair_error,
+                                "attempts": queued.attempts,
+                                "error": &queued.error,
+                                "class": queued.class,
                             }),
                         );
                     }
-                    let repair_client = Arc::clone(&client);
-                    let rate_gate = retry_gate.clone();
-                    let retry_base_delay = config.retry_base_delay;
-                    let task_timeout = config.task_timeout;
-                    let max_retries = config.max_retries;
-                    let require_closed_fences = task.require_closed_fences;
                     in_flight_repairs += 1;
                     running.insert(repair_id.clone());
                     control.task_started(&repair_id);
-                    in_flight.push(
-                        async move {
-                            let outcome = execute_with_retry(
-                                repair_client,
-                                request,
-                                max_retries,
-                                retry_base_delay,
-                                task_timeout,
-                                require_closed_fences,
-                                rate_gate,
-                            )
-                            .await;
-                            (repair_id, outcome)
-                        }
-                        .boxed(),
-                    );
+                    in_flight.push(spawn_task(
+                        repair_id.clone(),
+                        slot,
+                        run_attempts(
+                            attempt_context.clone(),
+                            request,
+                            task.require_closed_fences,
+                            task.validate_artifact,
+                            repair_id,
+                        ),
+                    ));
                 }
             }
         }};
@@ -962,34 +1116,23 @@ pub async fn execute_plan_with_control(
             // a repair still waiting in the queue is neither pending
             // nor running; record it cancelled so the run report covers
             // every plan task.
-            while let Some((repair_id, _, _, _)) = pending_repairs.pop_front() {
+            while let Some(queued) = pending_repairs.pop_front() {
+                let repair_id = queued.id;
                 if records.contains_key(&repair_id) {
                     continue;
                 }
                 let title = tasks
                     .get(&repair_id)
-                    .map(|task| task.title.clone())
+                    .map(|task| task.title.as_str())
                     .unwrap_or_default();
                 records.insert(
                     repair_id.clone(),
-                    TaskRecord {
-                        id: repair_id.clone(),
+                    TaskRecord::unrun(
+                        &repair_id,
                         title,
-                        status: TaskStatus::Cancelled,
-                        output: None,
-                        error: Some("cancelled by user".into()),
-                        attempts: 0,
-                        duration_ms: 0,
-                        input_tokens: 0,
-                        output_tokens: 0,
-                        reasoning_tokens: None,
-                        cached_input_tokens: None,
-                        provider: None,
-                        rate_limited: false,
-                        finish_reason: None,
-                        usage_is_estimated: false,
-                        time_to_first_token_ms: None,
-                    },
+                        TaskStatus::Cancelled,
+                        "cancelled by user".into(),
+                    ),
                 );
                 control.task_finished(&repair_id, TaskProgressStatus::Cancelled, 0);
             }
@@ -1025,44 +1168,53 @@ pub async fn execute_plan_with_control(
         let repairs_first = config
             .repair_inject_after_ms
             .zip(pending_repairs.front())
-            .is_some_and(|(patience, (_, _, _, queued_at))| {
-                queued_at.elapsed() >= Duration::from_millis(patience)
+            .is_some_and(|(patience, queued)| {
+                queued.queued_at.elapsed() >= Duration::from_millis(patience)
             });
-        if repairs_first {
-            drain_repairs!(admission_cap);
-        }
         let mut pace_wait = None;
+        if repairs_first {
+            drain_repairs!(admission_cap, pace_wait);
+        }
         while !ready.is_empty() && in_flight.len() < admission_cap {
-            if let Some(pace) = &mut pace {
-                if let Some(wait) = pace.wait_for_token(Instant::now()) {
+            let entry = ready.peek().context("ready queue was empty")?;
+            if !pending.contains(&entry.3) {
+                ready.pop(); // A failed ancestor already removed this stale entry.
+                continue;
+            }
+            let head = tasks.get(&entry.3).context("ready task disappeared")?;
+            // A precomputed artifact makes no request: it must not spend a
+            // start token or a TPM reserve it will never use.
+            let head_is_static = head.static_output.is_some();
+            // The shared in-flight ceiling (other runs on this provider may
+            // hold the slots); re-checked shortly, since no completion of
+            // this run's own will signal a slot another run frees.
+            let Some(slot) = limits.try_slot() else {
+                pace_wait = Some(SLOT_POLL);
+                break;
+            };
+            if !head_is_static {
+                if let Some(wait) = limits.start_wait(Instant::now()) {
                     pace_wait = Some(wait);
                     break;
                 }
             }
             // TPM pacing: reserve the spend estimate BEFORE popping,
             // so a starved bucket leaves the task in the ready queue. The
-            // estimate is recomputed for the same task after the pop and the
-            // reservation is recorded only for tasks actually admitted.
+            // prompt rendered for the estimate is the one the request sends.
             let mut tpm_estimate = None;
-            if let Some(tpm) = &mut tpm_pace {
-                let entry = ready.peek().context("ready queue was empty")?;
-                if let Some(task) = tasks.get(&entry.3) {
-                    let est_input =
-                        ((render_task_prompt(task, &outputs, config.max_dependency_chars).len()
-                            + shared_context.len())
-                            / 4) as u64;
-                    let estimate = est_input + task.max_tokens as u64;
-                    if let Some(wait) = tpm.reserve(estimate as f64, Instant::now()) {
-                        pace_wait = Some(pace_wait.map_or(wait, |current| current.max(wait)));
-                        break;
-                    }
-                    tpm_estimate = Some((est_input, task.max_tokens as u64));
+            let mut rendered_prompt = None;
+            if limits.has_tpm() && !head_is_static {
+                let prompt = render_task_prompt(head, &outputs, config.max_dependency_chars);
+                let est_input = ((prompt.len() + shared_context.len()) / 4) as u64;
+                let estimate = est_input + head.max_tokens as u64;
+                if let Some(wait) = limits.reserve(estimate as f64, Instant::now()) {
+                    pace_wait = Some(pace_wait.map_or(wait, |current| current.max(wait)));
+                    break;
                 }
+                tpm_estimate = Some((est_input, head.max_tokens as u64));
+                rendered_prompt = Some(prompt);
             }
             let (priority, task_budget, _, id) = ready.pop().context("ready queue was empty")?;
-            if !pending.contains(&id) {
-                continue; // A failed ancestor already removed this stale entry.
-            }
             if let Some((est_input, max_tokens)) = tpm_estimate {
                 tpm_reserved.insert(id.clone(), (est_input, max_tokens));
             }
@@ -1081,47 +1233,41 @@ pub async fn execute_plan_with_control(
                     }),
                 );
             }
-            let task = tasks.get(&id).context("ready task disappeared")?.clone();
-            let request = CompletionRequest {
-                system: WORKER_SYSTEM_PROMPT.to_string(),
-                shared_context: Some(shared_context.clone()),
-                user: render_task_prompt(&task, &outputs, config.max_dependency_chars),
-                max_tokens: task.max_tokens,
-                temperature: task.temperature.unwrap_or(config.default_temperature),
-                reasoning_effort: task_effort(&task, &config),
-                prompt_cache_key: config.prompt_cache_key.clone(),
-                allow_empty: false,
-                response_format: None,
-            };
-            let task_client = Arc::clone(&client);
-            let retry_base_delay = config.retry_base_delay;
-            let task_timeout = config.task_timeout;
-            let max_retries = config.max_retries;
-            let require_closed_fences = task.require_closed_fences;
-            let static_output = task.static_output.clone();
-            let rate_gate = retry_gate.clone();
-            let future_id = id.clone();
-            in_flight.push(
-                async move {
-                    // Precomputed artifacts complete instantly with no model
-                    // call and no token spend.
-                    if let Some(output) = static_output {
-                        return (future_id, static_success(output));
+            let task = tasks.get(&id).context("ready task disappeared")?;
+            let attempt = attempt_context.clone();
+            let validate_artifact = task.validate_artifact;
+            let work = match task.static_output.clone() {
+                // Precomputed artifacts complete instantly with no model
+                // call and no token spend.
+                Some(output) => {
+                    let task_id = id.clone();
+                    async move {
+                        apply_validation(
+                            static_success(output),
+                            &task_id,
+                            validate_artifact,
+                            attempt.validator.as_ref(),
+                        )
+                        .await
                     }
-                    let outcome = execute_with_retry(
-                        task_client,
-                        request,
-                        max_retries,
-                        retry_base_delay,
-                        task_timeout,
-                        require_closed_fences,
-                        rate_gate,
-                    )
-                    .await;
-                    (future_id, outcome)
+                    .boxed()
                 }
-                .boxed(),
-            );
+                None => {
+                    let mut request = task_request(task, &outputs, &shared_context, &config);
+                    if let Some(prompt) = rendered_prompt {
+                        request.user = prompt;
+                    }
+                    run_attempts(
+                        attempt,
+                        request,
+                        task.require_closed_fences,
+                        validate_artifact,
+                        id.clone(),
+                    )
+                    .boxed()
+                }
+            };
+            in_flight.push(spawn_task(id.clone(), slot, work));
             peak_concurrency = peak_concurrency.max(in_flight.len());
             control.task_started(&id);
             debug!(task_id = %id, in_flight = in_flight.len(), "task started");
@@ -1132,7 +1278,7 @@ pub async fn execute_plan_with_control(
         // the ready queue empties — the barrier case — this pass still
         // fires, so a queued repair never waits for wave end.
         if !repairs_first {
-            drain_repairs!(admission_cap);
+            drain_repairs!(admission_cap, pace_wait);
         }
 
         if records.len() == plan.tasks.len() && in_flight.is_empty() {
@@ -1142,13 +1288,15 @@ pub async fn execute_plan_with_control(
             continue;
         }
         if in_flight.is_empty() {
+            // With nothing in flight, only pacing (or a shared slot held by
+            // another run) can be holding work: the admission loop admits
+            // whenever a slot and a token are both available. Wait out the
+            // bucket instead of spinning.
+            if let Some(wait) = pace_wait {
+                tokio::time::sleep(wait).await;
+                continue;
+            }
             if !ready.is_empty() {
-                // With nothing in flight, only pacing can be holding tasks
-                // (the admission loop admits whenever a slot and a token are
-                // both available); wait out the bucket instead of spinning.
-                if let Some(wait) = pace_wait {
-                    tokio::time::sleep(wait).await;
-                }
                 continue;
             }
             bail!(
@@ -1178,32 +1326,83 @@ pub async fn execute_plan_with_control(
             _ = async { pace_sleep.as_mut().expect("arm requires a sleep").await }, if pace_sleep.is_some() => {
                 continue;
             }
+            // A request still in flight reported its first token, or one of
+            // its attempts failed: the controller hears about it now, not
+            // when the whole task (retries included) finally completes.
+            Some(signal) = signal_rx.recv() => {
+                if !config.adaptive {
+                    continue;
+                }
+                match signal {
+                    AttemptSignal::FirstToken { task_id, elapsed } => {
+                        if !config.controller_early_ttft {
+                            continue;
+                        }
+                        early_ttft_seen.insert(task_id);
+                        controller.record(WindowEvent {
+                            success: true,
+                            output_tokens: 0,
+                            duration: elapsed,
+                            time_to_first_token: Some(elapsed),
+                        });
+                    }
+                    AttemptSignal::Failed { class, duration } => {
+                        // Only capacity-shaped failures are concurrency
+                        // signals. A content failure says nothing about the
+                        // provider; a permanent one never will. With the
+                        // rate auto-tuner active a typed 429 is a RATE
+                        // signal the tuner answers by shrinking the pace;
+                        // with it off, a 429 still counts here (legacy).
+                        let counts = match class {
+                            FailureClass::Transport => true,
+                            FailureClass::RateLimited => rate_tune.is_none(),
+                            FailureClass::Content | FailureClass::Permanent => false,
+                        };
+                        if !counts {
+                            continue;
+                        }
+                        controller.record(WindowEvent {
+                            success: false,
+                            output_tokens: 0,
+                            duration,
+                            time_to_first_token: None,
+                        });
+                    }
+                }
+                if let Some(limit) = controller.maybe_evaluate(Instant::now()) {
+                    concurrency_curve.push(ConcurrencyPoint {
+                        elapsed_ms: millis(started.elapsed()),
+                        limit,
+                    });
+                }
+                continue;
+            }
             result = in_flight.next() => result.context("in-flight queue ended unexpectedly")?,
         };
         running.remove(&id);
         let task = tasks.get(&id).context("completed task disappeared")?;
-        let outcome = apply_validation(outcome, task, config.validator.as_ref()).await;
 
         // TPM pacing: reconcile the reservation with actual spend. The
         // input estimate is spent as reserved; the output reserve is refunded
         // down to the actual output tokens. Failures forfeit the reserve
         // (a truncated or failed stream burned the whole budget anyway).
         // Repair requests are deliberately not reserved (rare, small).
-        if let (Some(tpm), Some((_est_input, max_tokens))) =
-            (&mut tpm_pace, tpm_reserved.remove(&id))
-        {
+        if let Some((_est_input, max_tokens)) = tpm_reserved.remove(&id) {
             let spent_output = match &outcome {
                 ExecutionOutcome::Success(success) => success.output_tokens.min(max_tokens),
                 _ => max_tokens,
             };
-            tpm.refund((max_tokens - spent_output) as f64, Instant::now());
+            limits.refund((max_tokens - spent_output) as f64, Instant::now());
         }
+        // A precomputed artifact made no request: it is no evidence about
+        // the provider, for the rate tuner or for the controller.
+        let made_request = task.static_output.is_none() || repaired.contains_key(&id);
 
         // rate auto-tune: fold this task's 429 history into the tuner
         // and apply a changed multiplier to both pace buckets. The 429
         // signal rides successes too — retries absorb most rate rejections
         // without the task ever failing.
-        if let Some(tune) = rate_tune.as_mut() {
+        if let Some(tune) = rate_tune.as_mut().filter(|_| made_request) {
             let now = Instant::now();
             let changed = match &outcome {
                 ExecutionOutcome::Success(success) if success.rate_limited => {
@@ -1217,12 +1416,7 @@ pub async fn execute_plan_with_control(
             };
             if changed {
                 let multiplier = tune.multiplier;
-                if let Some(pace) = pace.as_mut() {
-                    pace.set_rate_multiplier(multiplier);
-                }
-                if let Some(tpm) = tpm_pace.as_mut() {
-                    tpm.set_rate_multiplier(multiplier);
-                }
+                limits.set_rate_multiplier(multiplier);
                 // retry starts follow the same learned rate.
                 if let Some(gate) = retry_gate.as_ref() {
                     gate.lock()
@@ -1248,30 +1442,22 @@ pub async fn execute_plan_with_control(
             }
         }
 
-        if config.adaptive {
-            match &outcome {
-                ExecutionOutcome::Success(success) => controller.record(WindowEvent {
+        // The first-token sample for this attempt, when it was already fed
+        // to the controller as it happened.
+        let ttft_already_sampled = early_ttft_seen.remove(&id);
+        if config.adaptive && made_request {
+            // Failed attempts reached the controller as they happened (the
+            // attempt-signal arm above), each under its own class; only the
+            // success is news here.
+            if let ExecutionOutcome::Success(success) = &outcome {
+                controller.record(WindowEvent {
                     success: true,
                     output_tokens: success.output_tokens,
                     duration: success.duration,
-                    time_to_first_token: success.time_to_first_token,
-                }),
-                // with the rate auto-tuner active, a typed 429 is a
-                // RATE signal, not a concurrency signal — it must not cut the
-                // concurrency limit (the wrong lever for a rate wall; the
-                // tuner shrinks the pace instead). With the tuner off the
-                // legacy behavior is bit-for-bit: every failure records.
-                ExecutionOutcome::Failure(failure)
-                    if !(failure.rate_limited && rate_tune.is_some()) =>
-                {
-                    controller.record(WindowEvent {
-                        success: false,
-                        output_tokens: 0,
-                        duration: failure.duration,
-                        time_to_first_token: None,
-                    })
-                }
-                _ => {}
+                    time_to_first_token: success
+                        .time_to_first_token
+                        .filter(|_| !ttft_already_sampled),
+                });
             }
             if let Some(limit) = controller.maybe_evaluate(Instant::now()) {
                 concurrency_curve.push(ConcurrencyPoint {
@@ -1295,18 +1481,30 @@ pub async fn execute_plan_with_control(
         // on top of a loaded provider. Queued repairs start from the drain
         // pass at the top of the loop, taking only slots fresh tasks left.
         let outcome = match outcome {
+            // A permanent failure (auth, unknown model, malformed request)
+            // fails the same way again: no repair, the task fails now.
             ExecutionOutcome::Failure(failure)
-                if !repaired.contains_key(&id) && !control.is_cancelled() =>
+                if !repaired.contains_key(&id)
+                    && !control.is_cancelled()
+                    && failure.class != FailureClass::Permanent =>
             {
-                warn!(task_id = %id, error = %failure.error, "task failed; repairing now");
-                repaired.insert(id.clone(), failure.attempts);
+                warn!(task_id = %id, error = %failure.error, class = ?failure.class, "task failed; repairing now");
+                repaired.insert(
+                    id.clone(),
+                    RepairCarry {
+                        attempts: failure.attempts,
+                        wasted_input_tokens: failure.wasted_input_tokens,
+                        wasted_output_tokens: failure.wasted_output_tokens,
+                    },
+                );
                 if config.max_concurrent_repairs.is_some() {
-                    pending_repairs.push_back((
-                        id.clone(),
-                        failure.error.clone(),
-                        failure.attempts,
-                        Instant::now(),
-                    ));
+                    pending_repairs.push_back(QueuedRepair {
+                        id: id.clone(),
+                        error: failure.error.clone(),
+                        class: failure.class,
+                        attempts: failure.attempts,
+                        queued_at: Instant::now(),
+                    });
                     if let Some(trace) = trace.as_mut() {
                         trace.emit(
                             "repair_queued",
@@ -1315,6 +1513,7 @@ pub async fn execute_plan_with_control(
                                 "task_id": &id,
                                 "attempts": failure.attempts,
                                 "error": &failure.error,
+                                "class": failure.class,
                                 "queue_depth": pending_repairs.len(),
                             }),
                         );
@@ -1329,36 +1528,33 @@ pub async fn execute_plan_with_control(
                             "task_id": &id,
                             "attempts": failure.attempts,
                             "error": &failure.error,
+                            "class": failure.class,
                         }),
                     );
                 }
-                let request =
-                    repair_request(task, &failure.error, &outputs, &shared_context, &config);
-                let repair_client = Arc::clone(&client);
-                let rate_gate = retry_gate.clone();
-                let retry_base_delay = config.retry_base_delay;
-                let task_timeout = config.task_timeout;
-                let max_retries = config.max_retries;
-                let require_closed_fences = task.require_closed_fences;
-                let future_id = id.clone();
+                let request = repair_request(
+                    task,
+                    &failure.error,
+                    failure.class,
+                    &outputs,
+                    &shared_context,
+                    &config,
+                );
                 running.insert(id.clone());
                 control.task_started(&id);
-                in_flight.push(
-                    async move {
-                        let outcome = execute_with_retry(
-                            repair_client,
-                            request,
-                            max_retries,
-                            retry_base_delay,
-                            task_timeout,
-                            require_closed_fences,
-                            rate_gate,
-                        )
-                        .await;
-                        (future_id, outcome)
-                    }
-                    .boxed(),
-                );
+                // The uncapped repair starts at once, above the admission
+                // ceiling by design; its slot is still counted.
+                in_flight.push(spawn_task(
+                    id.clone(),
+                    limits.slot_unchecked(),
+                    run_attempts(
+                        attempt_context.clone(),
+                        request,
+                        task.require_closed_fences,
+                        task.validate_artifact,
+                        id.clone(),
+                    ),
+                ));
                 continue;
             }
             other => other,
@@ -1369,7 +1565,8 @@ pub async fn execute_plan_with_control(
         if repaired.contains_key(&id) {
             in_flight_repairs = in_flight_repairs.saturating_sub(1);
         }
-        let prior_attempts = repaired.get(&id).copied().unwrap_or(0);
+        let carry = repaired.get(&id).copied().unwrap_or_default();
+        let prior_attempts = carry.attempts;
 
         match outcome {
             ExecutionOutcome::Success(success) => {
@@ -1409,6 +1606,9 @@ pub async fn execute_plan_with_control(
                     in_flight = in_flight.len(),
                     "task completed"
                 );
+                if let Some(journal) = journal.as_mut() {
+                    journal.record(&id, &task.prompt, &success.output);
+                }
                 outputs.insert(id.clone(), success.output.clone());
                 control.task_finished(&id, TaskProgressStatus::Succeeded, success.attempts);
                 records.insert(
@@ -1430,6 +1630,11 @@ pub async fn execute_plan_with_control(
                         finish_reason: success.finish_reason,
                         usage_is_estimated: success.usage_is_estimated,
                         time_to_first_token_ms: success.time_to_first_token.map(millis),
+                        failure_class: None,
+                        wasted_input_tokens: carry.wasted_input_tokens
+                            + success.wasted_input_tokens,
+                        wasted_output_tokens: carry.wasted_output_tokens
+                            + success.wasted_output_tokens,
                     },
                 );
 
@@ -1471,10 +1676,11 @@ pub async fn execute_plan_with_control(
                             "attempts": prior_attempts + failure.attempts,
                             "duration_ms": millis(failure.duration),
                             "error": &failure.error,
+                            "class": failure.class,
                         }),
                     );
                 }
-                warn!(task_id = %id, error = %failure.error, "task failed");
+                warn!(task_id = %id, error = %failure.error, class = ?failure.class, "task failed");
                 control.task_finished(&id, TaskProgressStatus::Failed, failure.attempts);
                 records.insert(
                     id.clone(),
@@ -1495,6 +1701,11 @@ pub async fn execute_plan_with_control(
                         finish_reason: None,
                         usage_is_estimated: false,
                         time_to_first_token_ms: None,
+                        failure_class: Some(failure.class),
+                        wasted_input_tokens: carry.wasted_input_tokens
+                            + failure.wasted_input_tokens,
+                        wasted_output_tokens: carry.wasted_output_tokens
+                            + failure.wasted_output_tokens,
                     },
                 );
 
@@ -1522,24 +1733,12 @@ pub async fn execute_plan_with_control(
                     }
                     records.insert(
                         skipped_id.clone(),
-                        TaskRecord {
-                            id: skipped_id.clone(),
-                            title: skipped_task.title.clone(),
-                            status: TaskStatus::Skipped,
-                            output: None,
-                            error: Some(format!("skipped because ancestor '{id}' failed")),
-                            attempts: 0,
-                            duration_ms: 0,
-                            input_tokens: 0,
-                            output_tokens: 0,
-                            reasoning_tokens: None,
-                            cached_input_tokens: None,
-                            provider: None,
-                            rate_limited: false,
-                            finish_reason: None,
-                            usage_is_estimated: false,
-                            time_to_first_token_ms: None,
-                        },
+                        TaskRecord::unrun(
+                            &skipped_id,
+                            &skipped_task.title,
+                            TaskStatus::Skipped,
+                            format!("skipped because ancestor '{id}' failed"),
+                        ),
                     );
                     control.task_finished(&skipped_id, TaskProgressStatus::Skipped, 0);
                     stack.extend(dependents.get(&skipped_id).into_iter().flatten().cloned());
@@ -1576,6 +1775,8 @@ pub async fn execute_plan_with_control(
         .filter_map(|task| task.cached_input_tokens)
         .collect();
     let total_cached_input_tokens = (!cache_reports.is_empty()).then(|| cache_reports.iter().sum());
+    let total_wasted_input_tokens = records.values().map(|task| task.wasted_input_tokens).sum();
+    let total_wasted_output_tokens = records.values().map(|task| task.wasted_output_tokens).sum();
     let ttft_samples: Vec<u64> = records
         .values()
         .filter_map(|task| task.time_to_first_token_ms)
@@ -1609,6 +1810,8 @@ pub async fn execute_plan_with_control(
         total_output_tokens,
         total_reasoning_tokens,
         total_cached_input_tokens,
+        total_wasted_input_tokens,
+        total_wasted_output_tokens,
         mean_time_to_first_token_ms,
         aggregate_output_tokens_per_second: total_output_tokens as f64 / elapsed_seconds,
         aggregate_total_tokens_per_second: (total_input_tokens + total_output_tokens) as f64
@@ -1634,31 +1837,284 @@ fn cancel_remaining(
         }
         let title = tasks
             .get(id)
-            .map(|task| task.title.clone())
+            .map(|task| task.title.as_str())
             .unwrap_or_default();
         records.insert(
             id.clone(),
-            TaskRecord {
-                id: id.clone(),
-                title,
-                status: TaskStatus::Cancelled,
-                output: None,
-                error: Some("cancelled by user".into()),
-                attempts: 0,
-                duration_ms: 0,
-                input_tokens: 0,
-                output_tokens: 0,
-                reasoning_tokens: None,
-                cached_input_tokens: None,
-                provider: None,
-                rate_limited: false,
-                finish_reason: None,
-                usage_is_estimated: false,
-                time_to_first_token_ms: None,
-            },
+            TaskRecord::unrun(id, title, TaskStatus::Cancelled, "cancelled by user".into()),
         );
         control.task_finished(id, TaskProgressStatus::Cancelled, 0);
     }
+}
+
+/// How often an admission blocked on the shared in-flight ceiling re-checks
+/// it (a slot freed by another run sends this run no wake-up).
+const SLOT_POLL: Duration = Duration::from_millis(50);
+
+/// Admission budgets that several runs against one provider share: the
+/// request-start bucket, the token-per-minute bucket, and a ceiling on
+/// requests in flight across all of them. Each run's own scheduler would
+/// otherwise pace itself alone, and N concurrent runs would send N times the
+/// configured rate at a provider that enforces one limit for the key.
+///
+/// Build one per provider and clone it into every run's
+/// `SchedulerConfig.shared_limits`. A run handed shared limits uses these
+/// buckets in place of its own `max_starts_per_minute` /
+/// `max_tokens_per_minute`.
+#[derive(Clone)]
+pub struct SharedLimits {
+    inner: Arc<SharedLimitsInner>,
+}
+
+struct SharedLimitsInner {
+    pace: Option<std::sync::Mutex<Pace>>,
+    tpm: Option<std::sync::Mutex<TpmPace>>,
+    max_in_flight: usize,
+    in_flight: std::sync::atomic::AtomicUsize,
+}
+
+impl std::fmt::Debug for SharedLimits {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SharedLimits")
+            .field("max_in_flight", &self.inner.max_in_flight)
+            .field("in_flight", &self.in_flight())
+            .finish_non_exhaustive()
+    }
+}
+
+impl SharedLimits {
+    /// `max_in_flight` bounds requests in flight across every run sharing
+    /// these limits; the two rate caps are optional, as on `SchedulerConfig`.
+    pub fn new(
+        max_in_flight: usize,
+        max_starts_per_minute: Option<u32>,
+        max_tokens_per_minute: Option<u64>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(SharedLimitsInner {
+                pace: max_starts_per_minute
+                    .filter(|rpm| *rpm > 0)
+                    .map(|rpm| std::sync::Mutex::new(Pace::new(rpm))),
+                tpm: max_tokens_per_minute
+                    .filter(|tpm| *tpm > 0)
+                    .map(|tpm| std::sync::Mutex::new(TpmPace::new(tpm))),
+                max_in_flight: max_in_flight.max(1),
+                in_flight: std::sync::atomic::AtomicUsize::new(0),
+            }),
+        }
+    }
+
+    /// Requests in flight right now across every run sharing these limits.
+    pub fn in_flight(&self) -> usize {
+        self.inner
+            .in_flight
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Take an in-flight slot when the shared ceiling has room.
+    fn try_slot(&self) -> Option<SlotGuard> {
+        use std::sync::atomic::Ordering;
+        let max = self.inner.max_in_flight;
+        self.inner
+            .in_flight
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                (current < max).then_some(current + 1)
+            })
+            .ok()
+            .map(|_| SlotGuard(self.clone()))
+    }
+
+    /// Count a request the admission ceiling does not gate (the uncapped
+    /// in-run repair), so the shared count stays truthful.
+    fn slot_unchecked(&self) -> SlotGuard {
+        self.inner
+            .in_flight
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        SlotGuard(self.clone())
+    }
+
+    /// `Some(wait)` when the start bucket has no token yet; `None` admits
+    /// (and consumes a token), or there is no start pacing.
+    fn start_wait(&self, now: Instant) -> Option<Duration> {
+        let pace = self.inner.pace.as_ref()?;
+        pace.lock().expect("pace lock").wait_for_token(now)
+    }
+
+    fn has_tpm(&self) -> bool {
+        self.inner.tpm.is_some()
+    }
+
+    /// `Some(wait)` when the TPM bucket cannot cover `needed` yet.
+    fn reserve(&self, needed: f64, now: Instant) -> Option<Duration> {
+        let tpm = self.inner.tpm.as_ref()?;
+        tpm.lock().expect("tpm lock").reserve(needed, now)
+    }
+
+    fn refund(&self, amount: f64, now: Instant) {
+        if let Some(tpm) = &self.inner.tpm {
+            tpm.lock().expect("tpm lock").refund(amount, now);
+        }
+    }
+
+    fn set_rate_multiplier(&self, multiplier: f64) {
+        if let Some(pace) = &self.inner.pace {
+            pace.lock()
+                .expect("pace lock")
+                .set_rate_multiplier(multiplier);
+        }
+        if let Some(tpm) = &self.inner.tpm {
+            tpm.lock()
+                .expect("tpm lock")
+                .set_rate_multiplier(multiplier);
+        }
+    }
+}
+
+/// One request's hold on the shared in-flight count; released when the
+/// request's future ends or is dropped (cancel, abort, panic).
+struct SlotGuard(SharedLimits);
+
+impl Drop for SlotGuard {
+    fn drop(&mut self) {
+        self.0
+            .inner
+            .in_flight
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+/// A queued in-run repair (capped configs).
+struct QueuedRepair {
+    id: String,
+    error: String,
+    class: FailureClass,
+    attempts: u32,
+    queued_at: Instant,
+}
+
+/// What a task's failed first pass leaves for its repair's record.
+#[derive(Debug, Clone, Copy, Default)]
+struct RepairCarry {
+    attempts: u32,
+    wasted_input_tokens: u64,
+    wasted_output_tokens: u64,
+}
+
+/// What a task future tells the dispatcher while its request is running.
+enum AttemptSignal {
+    /// The current attempt produced its first visible token.
+    FirstToken { task_id: String, elapsed: Duration },
+    /// An attempt failed (the task may still retry).
+    Failed {
+        class: FailureClass,
+        duration: Duration,
+    },
+}
+
+/// Append-only JSONL of succeeded task outputs (see
+/// `SchedulerConfig.journal_path`). Best-effort, like the trace: a failed
+/// write warns and never affects the run.
+struct JournalWriter {
+    file: std::fs::File,
+}
+
+impl JournalWriter {
+    fn create(path: &std::path::Path) -> Result<Self> {
+        let file = std::fs::File::create(path)
+            .with_context(|| format!("failed to create journal file {}", path.display()))?;
+        Ok(Self { file })
+    }
+
+    fn record(&mut self, task_id: &str, prompt: &str, output: &str) {
+        let line = serde_json::json!({
+            "task_id": task_id,
+            "prompt_hash": format!("{:016x}", jitter_salt(prompt)),
+            "output": output,
+        });
+        if let Err(error) = writeln!(self.file, "{line}") {
+            warn!(?error, "journal write failed");
+        }
+    }
+}
+
+/// Reuse a previous run's finished work: every task of `plan` whose id and
+/// prompt match a journal entry becomes a precomputed artifact (no model
+/// call), so a rerun after an interrupt or a crash pays only for what did
+/// not finish. A changed prompt does not match, so an edited task reruns.
+/// Returns how many tasks were restored.
+pub fn resume_plan_from_journal(plan: &mut Plan, journal: &std::path::Path) -> Result<usize> {
+    let text = std::fs::read_to_string(journal)
+        .with_context(|| format!("failed to read journal {}", journal.display()))?;
+    let mut finished = HashMap::<(String, String), String>::new();
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        // A run killed mid-write leaves a torn last line; skip it.
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let field = |name: &str| entry.get(name).and_then(|value| value.as_str());
+        if let (Some(id), Some(hash), Some(output)) =
+            (field("task_id"), field("prompt_hash"), field("output"))
+        {
+            finished.insert((id.to_string(), hash.to_string()), output.to_string());
+        }
+    }
+    let mut restored = 0;
+    for task in plan
+        .tasks
+        .iter_mut()
+        .filter(|task| task.static_output.is_none())
+    {
+        let key = (
+            task.id.clone(),
+            format!("{:016x}", jitter_salt(&task.prompt)),
+        );
+        if let Some(output) = finished.remove(&key) {
+            task.static_output = Some(output);
+            restored += 1;
+        }
+    }
+    Ok(restored)
+}
+
+/// Run a task's work on its own runtime task: streams parse off the
+/// dispatcher's thread, and a panic inside a host `ModelClient` or
+/// `Validator` fails that one task instead of unwinding the whole run.
+/// Dropping the returned future (cancel) aborts the work.
+fn spawn_task(
+    id: String,
+    slot: SlotGuard,
+    work: impl std::future::Future<Output = ExecutionOutcome> + Send + 'static,
+) -> futures::future::BoxFuture<'static, (String, ExecutionOutcome)> {
+    struct AbortOnDrop(tokio::task::JoinHandle<ExecutionOutcome>);
+    impl Drop for AbortOnDrop {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    let started = Instant::now();
+    let mut handle = AbortOnDrop(tokio::spawn(async move {
+        let _slot = slot;
+        work.await
+    }));
+    async move {
+        let outcome = match (&mut handle.0).await {
+            Ok(outcome) => outcome,
+            Err(error) => ExecutionOutcome::Failure(TaskFailure {
+                error: format!("task execution panicked: {error}"),
+                class: FailureClass::Transport,
+                attempts: 1,
+                duration: started.elapsed(),
+                retries: Vec::new(),
+                wasted_input_tokens: 0,
+                wasted_output_tokens: 0,
+                rate_limited: false,
+                rate_hint: None,
+            }),
+        };
+        (id, outcome)
+    }
+    .boxed()
 }
 
 fn static_success(output: String) -> ExecutionOutcome {
@@ -1677,6 +2133,8 @@ fn static_success(output: String) -> ExecutionOutcome {
         usage_is_estimated: false,
         time_to_first_token: None,
         retries: Vec::new(),
+        wasted_input_tokens: 0,
+        wasted_output_tokens: 0,
     })
 }
 
@@ -1755,6 +2213,9 @@ pub(crate) async fn run_shell_piped(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        // A caller's timeout drops this future; without this the timed-out
+        // shell would keep running as an orphan.
+        .kill_on_drop(true)
         .spawn()?;
     let mut stdin = child.stdin.take().expect("stdin is piped");
     let input = input.to_string();
@@ -1800,11 +2261,12 @@ impl std::fmt::Debug for SharedValidator {
 /// loop and the repair wave — call it on every completed attempt.
 async fn apply_validation(
     outcome: ExecutionOutcome,
-    task: &Task,
+    task_id: &str,
+    validate_artifact: bool,
     validator: Option<&SharedValidator>,
 ) -> ExecutionOutcome {
     let (validator, success) = match (&outcome, validator) {
-        (ExecutionOutcome::Success(success), Some(validator)) if task.validate_artifact => {
+        (ExecutionOutcome::Success(success), Some(validator)) if validate_artifact => {
             (validator, success)
         }
         _ => return outcome,
@@ -1812,20 +2274,21 @@ async fn apply_validation(
     match validator.0.validate(&success.output).await {
         Ok(()) => outcome,
         Err(message) => {
-            warn!(task_id = %task.id, error = %message, "artifact validation rejected output");
-            let (attempts, duration, retries) = match outcome {
-                ExecutionOutcome::Success(success) => {
-                    (success.attempts, success.duration, success.retries)
-                }
-                _ => unreachable!("outcome was matched as Success above"),
+            warn!(task_id = %task_id, error = %message, "artifact validation rejected output");
+            let ExecutionOutcome::Success(success) = outcome else {
+                unreachable!("outcome was matched as Success above")
             };
             ExecutionOutcome::Failure(TaskFailure {
                 error: format!("artifact validation failed: {message}"),
-                attempts,
-                duration,
-                retries,
-                rate_limited: false,
-                rate_hint: None,
+                class: FailureClass::Content,
+                attempts: success.attempts,
+                duration: success.duration,
+                retries: success.retries,
+                // The rejected completion was billed in full and thrown away.
+                wasted_input_tokens: success.wasted_input_tokens + success.input_tokens,
+                wasted_output_tokens: success.wasted_output_tokens + success.output_tokens,
+                rate_limited: success.rate_limited,
+                rate_hint: success.rate_hint,
             })
         }
     }
@@ -1887,15 +2350,44 @@ pub fn distill_repair_error(error: &str, budget: usize) -> String {
     )
 }
 
-/// The one in-run repair attempt: the original prompt plus the failure at
-/// the tail (the shared cache-aware head must remain the byte-prefix).
-fn repair_request(
+/// A task's first-pass request.
+fn task_request(
     task: &Task,
-    error_text: &str,
     outputs: &HashMap<String, String>,
     shared_context: &str,
     config: &SchedulerConfig,
 ) -> CompletionRequest {
+    CompletionRequest {
+        system: WORKER_SYSTEM_PROMPT.to_string(),
+        shared_context: Some(shared_context.to_string()),
+        user: render_task_prompt(task, outputs, config.max_dependency_chars),
+        max_tokens: task.max_tokens,
+        temperature: task.temperature.unwrap_or(config.default_temperature),
+        reasoning_effort: task_effort(task, config),
+        prompt_cache_key: config.prompt_cache_key.clone(),
+        allow_empty: false,
+        response_format: None,
+    }
+}
+
+/// The one in-run repair attempt. A CONTENT failure (the model's answer was
+/// unusable) repairs with the original prompt plus the failure at the tail
+/// (the shared cache-aware head must remain the byte-prefix). Any other
+/// class — the provider or the network failed the request — reruns the
+/// original request unchanged: there is no implementation to correct, and
+/// telling the model its work "failed validation: request timed out" only
+/// perturbs the answer.
+fn repair_request(
+    task: &Task,
+    error_text: &str,
+    class: FailureClass,
+    outputs: &HashMap<String, String>,
+    shared_context: &str,
+    config: &SchedulerConfig,
+) -> CompletionRequest {
+    if class != FailureClass::Content {
+        return task_request(task, outputs, shared_context, config);
+    }
     let mut repair_task = task.clone();
     // the tail delta is the only fresh input the server bills; keep
     // it within the host's budget. The max_tokens-growth check below runs on
@@ -1909,9 +2401,9 @@ fn repair_request(
         "
 
 # Repair context
-The previous implementation FAILED          validation:
+The previous implementation FAILED validation:
 {distilled}
-Output the COMPLETE corrected          artifact in exactly one fenced code block, following every          rule above exactly."
+Output the COMPLETE corrected artifact in exactly one fenced code block, following every rule above exactly."
     );
     CompletionRequest {
         system: WORKER_SYSTEM_PROMPT.to_string(),
@@ -1935,15 +2427,136 @@ Output the COMPLETE corrected          artifact in exactly one fenced code block
     }
 }
 
-async fn execute_with_retry(
+/// What one task's attempt loop needs from the run, cloned into each task
+/// future so the dispatcher loop never awaits a request or a validator.
+#[derive(Clone)]
+struct AttemptContext {
     client: Arc<dyn ModelClient>,
-    mut request: CompletionRequest,
     max_retries: u32,
     retry_base_delay: Duration,
     task_timeout: Duration,
-    require_closed_fences: bool,
     rate_gate: Option<Arc<std::sync::Mutex<Pace>>>,
+    validator: Option<SharedValidator>,
+    /// First-token reports and failed attempts, to the dispatcher.
+    signals: tokio::sync::mpsc::UnboundedSender<AttemptSignal>,
+    /// Time-to-first-token of every attempt in the wave so far, in ms (the
+    /// first-token watchdog's baseline).
+    ttft: Arc<std::sync::Mutex<Vec<u64>>>,
+    /// See `SchedulerConfig.first_token_watchdog`.
+    watchdog_factor: Option<f64>,
+}
+
+/// First tokens observed before the watchdog trusts its median.
+const WATCHDOG_MIN_SAMPLES: usize = 4;
+/// The watchdog never abandons an attempt sooner than this.
+const WATCHDOG_FLOOR: Duration = Duration::from_secs(5);
+
+impl AttemptContext {
+    /// How long an attempt may go without a first token before the watchdog
+    /// abandons it; `None` while the watchdog is off or has too few samples.
+    fn watchdog_limit(&self) -> Option<Duration> {
+        let factor = self.watchdog_factor?;
+        let mut samples = self.ttft.lock().expect("ttft lock").clone();
+        if samples.len() < WATCHDOG_MIN_SAMPLES {
+            return None;
+        }
+        samples.sort_unstable();
+        let median = samples[samples.len() / 2];
+        Some(Duration::from_millis((median as f64 * factor) as u64).max(WATCHDOG_FLOOR))
+    }
+}
+
+/// One task's whole attempt: the retry loop, then the artifact validator on a
+/// success. Runs inside the task future, so a slow validator holds only its
+/// own admission slot.
+async fn run_attempts(
+    context: AttemptContext,
+    request: CompletionRequest,
+    require_closed_fences: bool,
+    validate_artifact: bool,
+    task_id: String,
 ) -> ExecutionOutcome {
+    let validator = context.validator.clone();
+    let outcome = execute_with_retry(context, request, require_closed_fences, &task_id).await;
+    apply_validation(outcome, &task_id, validate_artifact, validator.as_ref()).await
+}
+
+/// One attempt's result: the completion, an error, the per-attempt timeout,
+/// or the first-token watchdog giving up on it.
+enum AttemptEnd {
+    Done(Result<crate::client::Completion>),
+    TimedOut,
+    Stalled(Duration),
+}
+
+/// Run one model call with the first-token hook installed, bounded by the
+/// per-attempt timeout and (when armed) the first-token watchdog.
+async fn run_one_attempt(
+    context: &AttemptContext,
+    request: CompletionRequest,
+    task_id: &str,
+) -> AttemptEnd {
+    let first_token_seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hook: crate::client::FirstTokenHook = {
+        let seen = Arc::clone(&first_token_seen);
+        let ttft = Arc::clone(&context.ttft);
+        let signals = context.signals.clone();
+        let task_id = task_id.to_string();
+        Arc::new(move |elapsed: Duration| {
+            seen.store(true, std::sync::atomic::Ordering::Release);
+            ttft.lock().expect("ttft lock").push(millis(elapsed));
+            let _ = signals.send(AttemptSignal::FirstToken {
+                task_id: task_id.clone(),
+                elapsed,
+            });
+        })
+    };
+    let call = tokio::time::timeout(
+        context.task_timeout,
+        crate::client::with_first_token_hook(hook, context.client.complete(request)),
+    );
+    tokio::pin!(call);
+    let finish = |result: std::result::Result<Result<crate::client::Completion>, _>| match result {
+        Ok(outcome) => AttemptEnd::Done(outcome),
+        Err(_) => AttemptEnd::TimedOut,
+    };
+    let Some(limit) = context.watchdog_limit() else {
+        return finish(call.await);
+    };
+    tokio::select! {
+        result = &mut call => finish(result),
+        _ = tokio::time::sleep(limit) => {
+            if first_token_seen.load(std::sync::atomic::Ordering::Acquire) {
+                finish(call.await)
+            } else {
+                AttemptEnd::Stalled(limit)
+            }
+        }
+    }
+}
+
+/// Stable per-request salt for retry jitter (FNV-1a over the prompt), so
+/// workers that fail together do not retry together.
+fn jitter_salt(text: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+async fn execute_with_retry(
+    context: AttemptContext,
+    mut request: CompletionRequest,
+    require_closed_fences: bool,
+    task_id: &str,
+) -> ExecutionOutcome {
+    let max_retries = context.max_retries;
+    let retry_base_delay = context.retry_base_delay;
+    let task_timeout = context.task_timeout;
+    let rate_gate = context.rate_gate.clone();
+    let salt = jitter_salt(&request.user);
     let started = Instant::now();
     let mut attempts = 0u32;
     let mut retries: Vec<TaskRetry> = Vec::new();
@@ -1952,21 +2565,27 @@ async fn execute_with_retry(
     // both the success and the failure path.
     let mut rate_limited = false;
     let mut rate_hint: Option<Duration> = None;
+    // Tokens billed for attempts whose output was discarded.
+    let mut wasted_input_tokens = 0u64;
+    let mut wasted_output_tokens = 0u64;
 
     loop {
         attempts += 1;
         let mut budget_hit = false;
-        // a failed attempt's reported output burn rides the error pair
-        // so the retry trace event can separate it (Some only for attempts
-        // the provider billed before failing: truncation/fence; transport
-        // errors and timeouts report nothing).
-        let (error, server_hint, typed_429, attempt_output) = match tokio::time::timeout(
-            task_timeout,
-            client.complete(request.clone()),
+        let attempt_started = Instant::now();
+        // a failed attempt's reported burn (input, output) rides the error
+        // so the retry trace event and the waste totals can separate it
+        // (Some only for attempts the provider billed before failing:
+        // truncation/fence/exhausted budget; transport errors and timeouts
+        // report nothing).
+        let (error, server_hint, class, burned) = match run_one_attempt(
+            &context,
+            request.clone(),
+            task_id,
         )
         .await
         {
-            Ok(Ok(mut completion)) => {
+            AttemptEnd::Done(Ok(mut completion)) => {
                 if require_closed_fences && has_unclosed_fence(&completion.text) {
                     if let Some(salvaged) = strip_orphan_trailing_fence(&completion.text) {
                         warn!("dropped a stray trailing code fence instead of retrying");
@@ -1981,14 +2600,14 @@ async fn execute_with_retry(
                 if completion.finish_reason.as_deref() == Some("length") {
                     budget_hit = true;
                     (
-                            format!(
-                                "completion truncated at max_tokens ({} output tokens emitted); raise the task's max_tokens",
-                                completion.output_tokens
-                            ),
-                            None,
-                            false,
-                            Some(completion.output_tokens),
-                        )
+                        format!(
+                            "completion truncated at max_tokens ({} output tokens emitted); raise the task's max_tokens",
+                            completion.output_tokens
+                        ),
+                        None,
+                        FailureClass::Content,
+                        Some((completion.input_tokens, completion.output_tokens)),
+                    )
                 } else if require_closed_fences && has_unclosed_fence(&completion.text) {
                     // A clean-looking finish is not proof of a complete
                     // artifact: observed on Muse at effort=low — the stream
@@ -2006,8 +2625,8 @@ async fn execute_with_retry(
                             completion.output_tokens, completion.finish_reason
                         ),
                         None,
-                        false,
-                        Some(completion.output_tokens),
+                        FailureClass::Content,
+                        Some((completion.input_tokens, completion.output_tokens)),
                     )
                 } else {
                     return ExecutionOutcome::Success(TaskSuccess {
@@ -2025,11 +2644,15 @@ async fn execute_with_retry(
                         usage_is_estimated: completion.usage_is_estimated,
                         time_to_first_token: completion.time_to_first_token,
                         retries,
+                        wasted_input_tokens,
+                        wasted_output_tokens,
                     });
                 }
             }
-            Ok(Err(error)) => {
-                budget_hit = error.downcast_ref::<BudgetExhaustedError>().is_some();
+            AttemptEnd::Done(Err(error)) => {
+                let exhausted = error.downcast_ref::<BudgetExhaustedError>();
+                budget_hit = exhausted.is_some();
+                let burned = exhausted.map(|spent| (spent.input_tokens, spent.output_tokens));
                 // A typed 429 carries the server's Retry-After; honor it
                 // instead of guessing. The observation also feeds the rate
                 // auto-tuner — kept even when a later attempt
@@ -2039,7 +2662,13 @@ async fn execute_with_retry(
                 let typed_429 = error.downcast_ref::<RateLimitedError>().is_some();
                 let hint = error
                     .downcast_ref::<RateLimitedError>()
-                    .and_then(|limited| limited.retry_after);
+                    .and_then(|limited| limited.retry_after)
+                    // An overloaded server (503/529) states its wait too.
+                    .or_else(|| {
+                        error
+                            .downcast_ref::<OverloadedError>()
+                            .and_then(|overloaded| overloaded.retry_after)
+                    });
                 if typed_429 {
                     rate_limited = true;
                     rate_hint = match (rate_hint, hint) {
@@ -2047,22 +2676,56 @@ async fn execute_with_retry(
                         (a, b) => a.or(b),
                     };
                 }
-                (format!("{error:#}"), hint, typed_429, None)
+                let class = if typed_429 {
+                    FailureClass::RateLimited
+                } else if error.downcast_ref::<PermanentError>().is_some() {
+                    FailureClass::Permanent
+                } else if budget_hit {
+                    FailureClass::Content
+                } else {
+                    FailureClass::Transport
+                };
+                (format!("{error:#}"), hint, class, burned)
             }
-            Err(_) => (
+            AttemptEnd::TimedOut => (
                 format!("request timed out after {} ms", task_timeout.as_millis()),
                 None,
-                false,
+                FailureClass::Transport,
+                None,
+            ),
+            AttemptEnd::Stalled(limit) => (
+                format!(
+                    "no first token after {} ms (first-token watchdog); abandoning the attempt",
+                    limit.as_millis()
+                ),
+                None,
+                FailureClass::Transport,
                 None,
             ),
         };
+        let typed_429 = class == FailureClass::RateLimited;
+        let attempt_output = burned.map(|(_, output)| output);
+        if let Some((input, output)) = burned {
+            wasted_input_tokens += input;
+            wasted_output_tokens += output;
+        }
+        // The dispatcher (and through it the controller) hears about the
+        // failed attempt now, not when the task's last retry is over.
+        let _ = context.signals.send(AttemptSignal::Failed {
+            class,
+            duration: attempt_started.elapsed(),
+        });
 
-        if attempts > max_retries {
+        // A permanent failure fails the same way on every retry.
+        if attempts > max_retries || class == FailureClass::Permanent {
             return ExecutionOutcome::Failure(TaskFailure {
                 error,
+                class,
                 attempts,
                 duration: started.elapsed(),
                 retries,
+                wasted_input_tokens,
+                wasted_output_tokens,
                 rate_limited,
                 rate_hint,
             });
@@ -2080,7 +2743,7 @@ async fn execute_with_retry(
                 request.max_tokens = grown;
             }
         }
-        let delay = retry_delay(retry_base_delay, attempts, server_hint);
+        let delay = retry_delay(retry_base_delay, attempts, server_hint, salt);
         // a typed 429 (Retry-After hint or not) with the gate enabled
         // waits out the shared retry gate (paced at the effective start rate,
         // tuner-scaled) plus the server's Retry-After hint, instead of the
@@ -2153,7 +2816,17 @@ fn has_unclosed_fence(text: &str) -> bool {
         == 1
 }
 
-fn retry_delay(base: Duration, attempts: u32, server_hint: Option<Duration>) -> Duration {
+/// Longest server Retry-After hint a retry waits out. A minute-window rate
+/// wall hints up to 60s; firing before the hint elapses earns a second 429
+/// and burns an attempt, so the cap sits above one full minute window.
+const MAX_RETRY_HINT: Duration = Duration::from_secs(120);
+
+fn retry_delay(
+    base: Duration,
+    attempts: u32,
+    server_hint: Option<Duration>,
+    salt: u64,
+) -> Duration {
     let factor = 1u32 << attempts.saturating_sub(1).min(5);
     let backoff = base
         .checked_mul(factor)
@@ -2161,12 +2834,14 @@ fn retry_delay(base: Duration, attempts: u32, server_hint: Option<Duration>) -> 
         .min(Duration::from_secs(30));
     // The server hint wins when it is longer; jitter (+0-50%) decorrelates
     // simultaneous retries across workers so they do not thundering-herd.
-    let seeded = backoff.max(
-        server_hint
-            .unwrap_or(Duration::ZERO)
-            .min(Duration::from_secs(30)),
-    );
-    let jitter_numerator = (attempts as u64).wrapping_mul(2_654_435_761) % 100;
+    // The salt is per request: a jitter keyed on the attempt number alone
+    // gives every worker the same offset, which is no jitter at all.
+    let seeded = backoff.max(server_hint.unwrap_or(Duration::ZERO).min(MAX_RETRY_HINT));
+    let mut mixed = salt ^ (attempts as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    mixed ^= mixed >> 30;
+    mixed = mixed.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    mixed ^= mixed >> 27;
+    let jitter_numerator = mixed % 100;
     seeded + seeded.mul_f64(jitter_numerator as f64 / 200.0)
 }
 
@@ -2428,7 +3103,13 @@ async fn await_cache_warmth(
                     allow_empty: true,
                     response_format: None,
                 };
-                async move { (index, client.complete(request).await) }
+                // A canary that outlives the remaining warm budget counts as
+                // an error, which reads as warm: the gate never holds the
+                // wave past its budget on one stuck request.
+                let remaining = deadline
+                    .saturating_duration_since(Instant::now())
+                    .max(config.cache_warm_poll);
+                async move { (index, bounded(remaining, client.complete(request)).await) }
             });
         for (index, result) in futures::future::join_all(canaries).await {
             warm[index] = match result {
@@ -2456,6 +3137,18 @@ async fn await_cache_warmth(
             return;
         }
         tokio::time::sleep(config.cache_warm_poll).await;
+    }
+}
+
+/// Bound a model call the task retry loop does not own (primes, canaries,
+/// probes): a client with no timeout of its own must not hang the run.
+async fn bounded<T>(
+    limit: Duration,
+    call: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    match tokio::time::timeout(limit, call).await {
+        Ok(result) => result,
+        Err(_) => bail!("request timed out after {} ms", limit.as_millis()),
     }
 }
 
@@ -2556,6 +3249,411 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
 
 fn millis(duration: Duration) -> u64 {
     duration.as_millis().min(u64::MAX as u128) as u64
+}
+
+#[cfg(test)]
+mod hardening_tests {
+    use super::*;
+    use crate::client::{report_first_token, Completion};
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn task(id: &str, prompt: &str, deps: &[&str]) -> Task {
+        Task {
+            id: id.into(),
+            title: format!("Task {id}"),
+            prompt: prompt.into(),
+            deps: deps.iter().map(|dep| (*dep).to_string()).collect(),
+            max_tokens: 64,
+            ..Task::default()
+        }
+    }
+
+    fn plan(tasks: Vec<Task>) -> Plan {
+        Plan {
+            objective: "hardening test".into(),
+            cache_primes: Vec::new(),
+            tasks,
+        }
+    }
+
+    fn completion(text: &str) -> Completion {
+        Completion {
+            text: text.into(),
+            provider: None,
+            input_tokens: 30,
+            output_tokens: 20,
+            reasoning_tokens: None,
+            cached_input_tokens: None,
+            finish_reason: Some("stop".to_string()),
+            usage_is_estimated: false,
+            elapsed: Duration::from_millis(1),
+            time_to_first_token: Some(Duration::from_millis(1)),
+        }
+    }
+
+    /// Scripted client: `respond(call_index, request)` decides each call.
+    struct Scripted<F> {
+        calls: AtomicUsize,
+        prompts: std::sync::Mutex<Vec<String>>,
+        respond: F,
+    }
+
+    impl<F> Scripted<F>
+    where
+        F: Fn(usize, &CompletionRequest) -> Result<Completion> + Send + Sync,
+    {
+        fn new(respond: F) -> Arc<Self> {
+            Arc::new(Self {
+                calls: AtomicUsize::new(0),
+                prompts: std::sync::Mutex::new(Vec::new()),
+                respond,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl<F> ModelClient for Scripted<F>
+    where
+        F: Fn(usize, &CompletionRequest) -> Result<Completion> + Send + Sync,
+    {
+        async fn complete(&self, request: CompletionRequest) -> Result<Completion> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            self.prompts.lock().unwrap().push(request.user.clone());
+            (self.respond)(call, &request)
+        }
+    }
+
+    #[test]
+    fn retry_jitter_differs_between_requests_and_honors_long_hints() {
+        let base = Duration::from_millis(250);
+        let delays: HashSet<Duration> = (0..16u64)
+            .map(|index| retry_delay(base, 1, None, jitter_salt(&format!("prompt {index}"))))
+            .collect();
+        assert!(
+            delays.len() > 8,
+            "workers on the same attempt must not share one delay: {delays:?}"
+        );
+        // A minute-window Retry-After is waited out in full, not cut at 30s.
+        let hinted = retry_delay(base, 1, Some(Duration::from_secs(60)), 7);
+        assert!(hinted >= Duration::from_secs(60), "{hinted:?}");
+    }
+
+    #[tokio::test]
+    async fn permanent_errors_are_neither_retried_nor_repaired() {
+        let client = Scripted::new(|_, _: &CompletionRequest| {
+            Err(PermanentError {
+                status: 401,
+                message: "model server returned HTTP 401 Unauthorized: bad key".into(),
+            }
+            .into())
+        });
+        let report = execute_plan(
+            &plan(vec![task("a", "Do A.", &[])]),
+            client.clone(),
+            SchedulerConfig::default(),
+        )
+        .await
+        .unwrap();
+        let record = &report.tasks["a"];
+        assert_eq!(record.status, TaskStatus::Failed);
+        assert_eq!(record.failure_class, Some(FailureClass::Permanent));
+        assert_eq!(record.attempts, 1);
+        assert_eq!(
+            client.calls.load(Ordering::SeqCst),
+            1,
+            "one doomed request, not retries plus a repair"
+        );
+    }
+
+    #[tokio::test]
+    async fn transport_failures_rerun_the_original_request_unchanged() {
+        let client = Scripted::new(|call, _: &CompletionRequest| {
+            if call == 0 {
+                bail!("connection reset by peer");
+            }
+            Ok(completion("done"))
+        });
+        let report = execute_plan(
+            &plan(vec![task("a", "Do A.", &[])]),
+            client.clone(),
+            SchedulerConfig {
+                max_retries: 0,
+                ..SchedulerConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(report.is_success());
+        let prompts = client.prompts.lock().unwrap();
+        assert_eq!(prompts.len(), 2);
+        assert_eq!(
+            prompts[0], prompts[1],
+            "a transport failure has no implementation to correct"
+        );
+        assert!(!prompts[1].contains("# Repair context"));
+    }
+
+    #[tokio::test]
+    async fn static_tasks_spend_no_start_tokens() {
+        // rpm 1 = a 4-token burst, then one start per minute. Six static
+        // tasks make no request, so none of them may wait on the bucket.
+        let tasks = (0..6)
+            .map(|index| Task {
+                static_output: Some(format!("artifact {index}")),
+                ..task(&format!("s{index}"), "precomputed", &[])
+            })
+            .collect();
+        let client = Scripted::new(|_, _: &CompletionRequest| Ok(completion("unused")));
+        let started = Instant::now();
+        let report = execute_plan(
+            &plan(tasks),
+            client.clone(),
+            SchedulerConfig {
+                max_starts_per_minute: Some(1),
+                ..SchedulerConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(report.is_success());
+        assert_eq!(client.calls.load(Ordering::SeqCst), 0);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "static tasks waited on the start bucket: {:?}",
+            started.elapsed()
+        );
+    }
+
+    struct RejectFirst(AtomicUsize);
+
+    #[async_trait]
+    impl Validator for RejectFirst {
+        async fn validate(&self, _output: &str) -> std::result::Result<(), String> {
+            match self.0.fetch_add(1, Ordering::SeqCst) {
+                0 => Err("SyntaxError: invalid syntax".to_string()),
+                _ => Ok(()),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn rejected_completions_are_counted_as_wasted_tokens() {
+        let client = Scripted::new(|_, _: &CompletionRequest| Ok(completion("artifact")));
+        let report = execute_plan(
+            &plan(vec![Task {
+                validate_artifact: true,
+                ..task("a", "Do A.", &[])
+            }]),
+            client,
+            SchedulerConfig {
+                validator: Some(SharedValidator(Arc::new(RejectFirst(AtomicUsize::new(0))))),
+                ..SchedulerConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(report.is_success());
+        let record = &report.tasks["a"];
+        // The kept completion is the bill's first line; the rejected one is
+        // the second, and it was invisible before.
+        assert_eq!(record.output_tokens, 20);
+        assert_eq!(record.wasted_output_tokens, 20);
+        assert_eq!(record.wasted_input_tokens, 30);
+        assert_eq!(report.total_wasted_output_tokens, 20);
+    }
+
+    #[tokio::test]
+    async fn journal_restores_finished_tasks_and_reruns_edited_ones() {
+        let dir = std::env::temp_dir().join(format!(
+            "slimtoken-journal-{}-{}",
+            std::process::id(),
+            jitter_salt("journal test")
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let journal = dir.join("journal.jsonl");
+        let tasks = || vec![task("a", "Do A.", &[]), task("b", "Do B.", &["a"])];
+        let client = Scripted::new(|_, request: &CompletionRequest| {
+            Ok(completion(&format!("out:{}", request.user.len())))
+        });
+        let report = execute_plan(
+            &plan(tasks()),
+            client,
+            SchedulerConfig {
+                journal_path: Some(journal.clone()),
+                ..SchedulerConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(report.is_success());
+
+        let mut resumed = plan(tasks());
+        resumed.tasks[1].prompt = "Do B differently.".into();
+        let restored = resume_plan_from_journal(&mut resumed, &journal).unwrap();
+        assert_eq!(restored, 1, "the edited task must rerun");
+        assert_eq!(resumed.tasks[0].static_output, report.tasks["a"].output);
+        assert!(resumed.tasks[1].static_output.is_none());
+
+        // The resumed run pays for the unfinished task only.
+        let client = Scripted::new(|_, _: &CompletionRequest| Ok(completion("fresh")));
+        let rerun = execute_plan(&resumed, client.clone(), SchedulerConfig::default())
+            .await
+            .unwrap();
+        assert!(rerun.is_success());
+        assert_eq!(client.calls.load(Ordering::SeqCst), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Tracks the peak number of requests in flight across every run.
+    struct Tracking {
+        active: AtomicUsize,
+        peak: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ModelClient for Tracking {
+        async fn complete(&self, _request: CompletionRequest) -> Result<Completion> {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(active, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(15)).await;
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            Ok(completion("ok"))
+        }
+    }
+
+    #[tokio::test]
+    async fn shared_limits_bound_in_flight_requests_across_runs() {
+        let client = Arc::new(Tracking {
+            active: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+        });
+        let limits = SharedLimits::new(3, None, None);
+        let wave = |name: &str| {
+            let tasks = (0..8)
+                .map(|index| task(&format!("{name}{index}"), "Do it.", &[]))
+                .collect();
+            let config = SchedulerConfig {
+                shared_limits: Some(limits.clone()),
+                ..SchedulerConfig::default()
+            };
+            let client: Arc<dyn ModelClient> = client.clone();
+            async move { execute_plan(&plan(tasks), client, config).await }
+        };
+        let (left, right) = tokio::join!(wave("l"), wave("r"));
+        assert!(left.unwrap().is_success());
+        assert!(right.unwrap().is_success());
+        assert!(
+            client.peak.load(Ordering::SeqCst) <= 3,
+            "two runs together exceeded the shared ceiling: {}",
+            client.peak.load(Ordering::SeqCst)
+        );
+        assert_eq!(limits.in_flight(), 0, "every slot was released");
+    }
+
+    /// First token after 5ms, completion after `body`.
+    struct Streaming {
+        body: Duration,
+    }
+
+    #[async_trait]
+    impl ModelClient for Streaming {
+        async fn complete(&self, _request: CompletionRequest) -> Result<Completion> {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            report_first_token(Duration::from_millis(5));
+            tokio::time::sleep(self.body).await;
+            Ok(Completion {
+                time_to_first_token: Some(Duration::from_millis(5)),
+                ..completion("ok")
+            })
+        }
+    }
+
+    async fn ramp_peak(early: bool) -> usize {
+        let tasks = (0..24)
+            .map(|index| task(&format!("t{index}"), "Do it.", &[]))
+            .collect();
+        let report = execute_plan(
+            &plan(tasks),
+            Arc::new(Streaming {
+                body: Duration::from_secs(1),
+            }),
+            SchedulerConfig {
+                adaptive: true,
+                max_concurrency: 64,
+                controller_early_ttft: early,
+                controller: ControllerConfig {
+                    window: Duration::from_millis(40),
+                    ..ControllerConfig::default()
+                },
+                ..SchedulerConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(report.is_success());
+        report.peak_concurrency
+    }
+
+    #[tokio::test]
+    async fn early_first_token_samples_ramp_before_the_first_completion() {
+        // 24 ready tasks, cold-start seed 16, each task 1s long. With
+        // completion-time sampling the controller has nothing to evaluate
+        // until tasks finish, so all 24 are never in flight together; with
+        // first-token samples it ramps while the first 16 are still
+        // streaming and the last 8 join them.
+        assert!(ramp_peak(false).await < 24);
+        assert_eq!(ramp_peak(true).await, 24);
+    }
+
+    /// The task named "stuck" never produces a first token on its first
+    /// call; every other call streams normally.
+    struct StallOnce {
+        stalled: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ModelClient for StallOnce {
+        async fn complete(&self, request: CompletionRequest) -> Result<Completion> {
+            if request.user.contains("stuck") && self.stalled.fetch_add(1, Ordering::SeqCst) == 0 {
+                std::future::pending::<()>().await;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            report_first_token(Duration::from_millis(2));
+            Ok(completion("ok"))
+        }
+    }
+
+    #[tokio::test]
+    async fn first_token_watchdog_abandons_a_stuck_attempt() {
+        let mut tasks: Vec<Task> = (0..4)
+            .map(|index| task(&format!("w{index}"), "Do it.", &[]))
+            .collect();
+        // Runs after the four that give the watchdog its baseline.
+        tasks.push(task("z", "stuck", &["w0", "w1", "w2", "w3"]));
+        let started = Instant::now();
+        let report = execute_plan(
+            &plan(tasks),
+            Arc::new(StallOnce {
+                stalled: AtomicUsize::new(0),
+            }),
+            SchedulerConfig {
+                first_token_watchdog: Some(2.0),
+                retry_base_delay: Duration::from_millis(1),
+                task_timeout: Duration::from_secs(120),
+                ..SchedulerConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(report.is_success());
+        assert_eq!(report.tasks["z"].attempts, 2);
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the stuck attempt was not abandoned: {:?}",
+            started.elapsed()
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2832,13 +3930,24 @@ mod tests {
         assert_eq!(report.total_output_tokens, 24);
     }
 
+    /// A content-class failure (the model's answer was unusable), the class
+    /// whose in-run repair carries the error back to the model.
+    fn content_failure() -> anyhow::Error {
+        BudgetExhaustedError {
+            input_tokens: 0,
+            output_tokens: 0,
+            reasoning_tokens: 0,
+        }
+        .into()
+    }
+
     struct FailureClient;
 
     #[async_trait]
     impl ModelClient for FailureClient {
         async fn complete(&self, request: CompletionRequest) -> Result<Completion> {
             if request.user.contains("please-fail") {
-                bail!("intentional test failure");
+                return Err(content_failure());
             }
             Ok(completion("unrelated output"))
         }
@@ -3218,8 +4327,15 @@ mod tests {
         // c=48 on both benchmark providers, so this is the expected shape
         // there too).
         let client = MockClient::new(Duration::from_millis(300));
-        let (width, steps) =
-            run_concurrency_probe(&client, &ProbeConfig::default(), 64, None, None).await;
+        let (width, steps) = run_concurrency_probe(
+            &client,
+            &ProbeConfig::default(),
+            64,
+            None,
+            None,
+            Duration::from_secs(30),
+        )
+        .await;
         assert_eq!(width, 32, "healthy provider tops the ladder: {steps:?}");
         assert_eq!(steps.len(), 6, "every ladder step ran: {steps:?}");
         assert!(
@@ -3240,7 +4356,8 @@ mod tests {
             ladder: vec![1, 2, 4, 8, 16],
             ..ProbeConfig::default()
         };
-        let (width, steps) = run_concurrency_probe(&client, &probe, 64, None, None).await;
+        let (width, steps) =
+            run_concurrency_probe(&client, &probe, 64, None, None, Duration::from_secs(30)).await;
         assert_eq!(
             width, 2,
             "failure knee at 4 keeps the last good width: {steps:?}"
@@ -3262,7 +4379,7 @@ mod tests {
     #[async_trait]
     impl ModelClient for FailOnceClient {
         async fn complete(&self, request: CompletionRequest) -> Result<Completion> {
-            let is_repair = request.user.contains("intentional test failure");
+            let is_repair = request.user.contains("# Repair context");
             self.seen.lock().unwrap().push((
                 request.user.lines().next().unwrap_or("").to_string(),
                 is_repair,
@@ -3274,7 +4391,7 @@ mod tests {
                 self.active.fetch_sub(1, Ordering::SeqCst);
                 return Ok(completion("fixed"));
             }
-            bail!("intentional test failure");
+            return Err(content_failure());
         }
     }
 
@@ -3425,7 +4542,7 @@ mod tests {
     #[async_trait]
     impl ModelClient for SlowFailOnceClient {
         async fn complete(&self, request: CompletionRequest) -> Result<Completion> {
-            if request.user.contains("intentional test failure") {
+            if request.user.contains("# Repair context") {
                 tokio::time::sleep(Duration::from_millis(1)).await;
                 self.seen.lock().unwrap().push("a-repair".to_string());
                 return Ok(completion("fixed"));
@@ -3433,7 +4550,7 @@ mod tests {
             if request.user.contains("FAIL-A") {
                 tokio::time::sleep(Duration::from_millis(1)).await;
                 self.seen.lock().unwrap().push("a".to_string());
-                bail!("intentional test failure");
+                return Err(content_failure());
             }
             tokio::time::sleep(Duration::from_millis(60)).await;
             for marker in ["B", "C", "D", "E", "F"] {
@@ -3531,7 +4648,7 @@ mod tests {
             async fn complete(&self, request: CompletionRequest) -> Result<Completion> {
                 // The repair prompt embeds the original error text; check it
                 // before FAIL-A, which the repair prompt also contains.
-                if request.user.contains("intentional test failure") {
+                if request.user.contains("# Repair context") {
                     tokio::time::sleep(Duration::from_millis(1)).await;
                     self.seen.lock().unwrap().push("repair".to_string());
                     return Ok(completion("fixed"));
@@ -3539,7 +4656,7 @@ mod tests {
                 if request.user.contains("FAIL-A") {
                     tokio::time::sleep(Duration::from_millis(1)).await;
                     self.seen.lock().unwrap().push("a".to_string());
-                    bail!("intentional test failure");
+                    return Err(content_failure());
                 }
                 tokio::time::sleep(Duration::from_millis(240)).await;
                 for marker in ["h1", "h2", "h3"] {
@@ -3967,7 +5084,14 @@ mod tests {
         // re-rendered title/response trailer.
         let original_prefix = format!("# Assignment\n{}", fix.prompt);
 
-        let repair = repair_request(&fix, &error, &outputs, "shared", &config);
+        let repair = repair_request(
+            &fix,
+            &error,
+            FailureClass::Content,
+            &outputs,
+            "shared",
+            &config,
+        );
 
         assert!(
             repair.user.starts_with(&original_prefix),
@@ -4003,7 +5127,14 @@ mod tests {
         let outputs = HashMap::<String, String>::new();
         let config = SchedulerConfig::default(); // repair_error_chars: None
         let error = "x".repeat(5000);
-        let repair = repair_request(&fix, &error, &outputs, "shared", &config);
+        let repair = repair_request(
+            &fix,
+            &error,
+            FailureClass::Content,
+            &outputs,
+            "shared",
+            &config,
+        );
         assert!(
             repair.user.contains(&error),
             "None budget preserves the legacy whole-error behavior"
@@ -4022,7 +5153,14 @@ mod tests {
             ..SchedulerConfig::default()
         };
         let error = format!("{} completion truncated at max_tokens", "y".repeat(2000));
-        let repair = repair_request(&fix, &error, &outputs, "shared", &config);
+        let repair = repair_request(
+            &fix,
+            &error,
+            FailureClass::Content,
+            &outputs,
+            "shared",
+            &config,
+        );
         assert_eq!(repair.max_tokens, fix.max_tokens.saturating_mul(2));
     }
 

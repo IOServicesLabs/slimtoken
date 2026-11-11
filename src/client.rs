@@ -46,6 +46,72 @@ impl fmt::Display for BudgetExhaustedError {
 
 impl std::error::Error for BudgetExhaustedError {}
 
+/// The request itself is wrong and will fail the same way again: bad
+/// credentials, an unknown model, a malformed or oversized body. The
+/// scheduler neither retries nor repairs these — every further attempt is a
+/// doomed request.
+#[derive(Debug)]
+pub struct PermanentError {
+    pub status: u16,
+    pub message: String,
+}
+
+impl fmt::Display for PermanentError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for PermanentError {}
+
+/// A transient server-side failure that came with a Retry-After (HTTP
+/// 503/529 overload). Retried like any transport error, but the retry waits
+/// out the server's stated window.
+#[derive(Debug)]
+pub struct OverloadedError {
+    pub retry_after: Option<Duration>,
+    pub message: String,
+}
+
+impl fmt::Display for OverloadedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for OverloadedError {}
+
+fn is_permanent_status(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 400 | 401 | 403 | 404 | 405 | 413 | 422)
+}
+
+/// Callback a scheduler installs around a model call to learn the moment the
+/// first visible token arrives, long before the completion returns.
+pub type FirstTokenHook = Arc<dyn Fn(Duration) + Send + Sync>;
+
+tokio::task_local! {
+    static FIRST_TOKEN_HOOK: FirstTokenHook;
+}
+
+/// Run `call` with `hook` installed: a client inside it that calls
+/// [`report_first_token`] reaches the hook. Task-local, so it passes through
+/// wrapper clients (fan-out, failover, recording) untouched.
+pub async fn with_first_token_hook<F: std::future::Future>(
+    hook: FirstTokenHook,
+    call: F,
+) -> F::Output {
+    FIRST_TOKEN_HOOK.scope(hook, call).await
+}
+
+/// Report that the current request produced its first visible token after
+/// `elapsed`. Streaming `ModelClient` implementations call this once per
+/// request; it is a no-op when no scheduler is listening. It lets the
+/// adaptive controller and the first-token watchdog act on time-to-first-
+/// token while a request is still streaming.
+pub fn report_first_token(elapsed: Duration) {
+    let _ = FIRST_TOKEN_HOOK.try_with(|hook| hook(elapsed));
+}
+
 #[derive(Debug, Clone)]
 pub struct CompletionRequest {
     pub system: String,
@@ -225,6 +291,12 @@ pub struct HealthRoutingConfig {
     /// re-enters through a successful EMA decay instead of waiting for a
     /// total pool outage. Clamped to >= 1 (1 = probe on every call).
     pub recovery_probe_every: u32,
+    /// Bound on one backend call. A caller-side timeout (the scheduler's
+    /// per-attempt timeout) drops the call before its outcome is recorded,
+    /// so a HUNG backend never moves its error EMA unless the call is
+    /// bounded here. Set it below the scheduler's `task_timeout`. `None`
+    /// (default) records only outcomes the backend client returns.
+    pub call_timeout: Option<Duration>,
 }
 
 impl Default for HealthRoutingConfig {
@@ -236,6 +308,7 @@ impl Default for HealthRoutingConfig {
             // 1/8 of calls hashed to a broken backend pay one retry while it
             // is down, in exchange for timely self-recovery.
             recovery_probe_every: 8,
+            call_timeout: None,
         }
     }
 }
@@ -394,7 +467,22 @@ impl ModelClient for FanOutClient {
             request.reasoning_effort = backend.default_effort.clone();
         }
         let start = Instant::now();
-        let result = backend.client.complete(request).await;
+        let call = backend.client.complete(request);
+        let limit = self
+            .health
+            .as_ref()
+            .and_then(|health| health.config.call_timeout);
+        let result = match limit {
+            Some(limit) => match tokio::time::timeout(limit, call).await {
+                Ok(result) => result,
+                Err(_) => Err(anyhow::anyhow!(
+                    "backend {} timed out after {} ms",
+                    backend.label,
+                    limit.as_millis()
+                )),
+            },
+            None => call.await,
+        };
         if let Some(health) = &self.health {
             health.record(index, start.elapsed(), result.is_err());
         }
@@ -474,12 +562,8 @@ impl OpenAiClient {
         if base_url.is_empty() {
             bail!("model base URL cannot be empty");
         }
-        let http = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(15))
-            .build()
-            .context("failed to construct HTTP client")?;
         Ok(Self {
-            http,
+            http: build_http(Some(DEFAULT_STREAM_IDLE_TIMEOUT))?,
             endpoint: format!("{base_url}/chat/completions"),
             model: model.into(),
             api_key,
@@ -487,10 +571,37 @@ impl OpenAiClient {
         })
     }
 
+    /// Longest silence tolerated on one request: waiting for the response
+    /// head, or between two stream chunks. A stalled stream then fails as an
+    /// ordinary error within this bound instead of holding its slot for the
+    /// scheduler's whole per-attempt timeout — and requests the scheduler
+    /// does not time out at all (primes, canaries, probes, planning) can no
+    /// longer hang forever. `None` disables the bound. Raise it for servers
+    /// that stream nothing while a model reasons for minutes.
+    pub fn with_stream_idle_timeout(mut self, idle: Option<Duration>) -> Result<Self> {
+        self.http = build_http(idle)?;
+        Ok(self)
+    }
+
     pub fn with_stream_usage(mut self, enabled: bool) -> Self {
         self.include_stream_usage = enabled;
         self
     }
+}
+
+/// Default stream idle bound (see `OpenAiClient::with_stream_idle_timeout`).
+pub const DEFAULT_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+
+fn build_http(idle: Option<Duration>) -> Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        // Long silent phases (hidden reasoning) must survive NAT and proxy
+        // idle reaping.
+        .tcp_keepalive(Duration::from_secs(30));
+    if let Some(idle) = idle {
+        builder = builder.read_timeout(idle);
+    }
+    builder.build().context("failed to construct HTTP client")
 }
 
 #[derive(Default)]
@@ -538,20 +649,36 @@ impl ModelClient for OpenAiClient {
         let mut response = builder.send().await.context("model request failed")?;
         let status = response.status();
         if !status.is_success() {
+            // Surfaced on typed errors so the scheduler can honor the
+            // server's Retry-After instead of guessing a backoff.
+            let retry_after = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|text| text.trim().parse::<u64>().ok())
+                .map(Duration::from_secs);
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                // Surfaced as a typed error so the scheduler can honor the
-                // server's Retry-After instead of guessing a backoff.
-                let retry_after = response
-                    .headers()
-                    .get(reqwest::header::RETRY_AFTER)
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(|text| text.parse::<u64>().ok())
-                    .map(Duration::from_secs);
                 return Err(RateLimitedError { retry_after }.into());
             }
             let error_body = response.text().await.unwrap_or_default();
             let excerpt: String = error_body.chars().take(1_000).collect();
-            bail!("model server returned HTTP {status}: {excerpt}");
+            let message = format!("model server returned HTTP {status}: {excerpt}");
+            if is_permanent_status(status) {
+                return Err(PermanentError {
+                    status: status.as_u16(),
+                    message,
+                }
+                .into());
+            }
+            if retry_after.is_some() {
+                // 503/529-style overload with a server-stated wait.
+                return Err(OverloadedError {
+                    retry_after,
+                    message,
+                }
+                .into());
+            }
+            bail!(message);
         }
 
         let mut buffered = Vec::<u8>::new();
@@ -569,7 +696,9 @@ impl ModelClient for OpenAiClient {
                 let event = String::from_utf8(event_bytes).context("stream was not UTF-8")?;
                 done = consume_event(&event, &mut text, &mut usage, &mut finish_reason)?;
                 if time_to_first_token.is_none() && !text.is_empty() {
-                    time_to_first_token = Some(started.elapsed());
+                    let elapsed = started.elapsed();
+                    time_to_first_token = Some(elapsed);
+                    report_first_token(elapsed);
                 }
                 if done {
                     break;
@@ -581,8 +710,14 @@ impl ModelClient for OpenAiClient {
         }
 
         if !done && !buffered.is_empty() {
+            // A server may close right after `data: [DONE]` without the blank
+            // line that ends an event; the sentinel still counts, or a
+            // complete response would be rejected as truncated and redone.
             let event = String::from_utf8(buffered).context("stream was not UTF-8")?;
-            consume_event(&event, &mut text, &mut usage, &mut finish_reason)?;
+            done = consume_event(&event, &mut text, &mut usage, &mut finish_reason)?;
+            if time_to_first_token.is_none() && !text.is_empty() {
+                time_to_first_token = Some(started.elapsed());
+            }
         }
         ensure_stream_complete(done, finish_reason.as_deref(), text.chars().count())?;
         if text.is_empty() && !request.allow_empty {
@@ -1076,6 +1211,7 @@ mod tests {
             breaker_threshold: 7.0,
             min_probes: 0,
             recovery_probe_every: 0,
+            call_timeout: None,
         }
         .clamped();
         assert_eq!(

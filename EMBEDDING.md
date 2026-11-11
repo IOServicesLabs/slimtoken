@@ -195,9 +195,9 @@ major version.
 | `priming_complete` | Cache primes processed (only when the plan has primes) | `primes`, `priming_ms`, `warm_gate` |
 | `task_start` | A task is admitted | `task_id`, `depth`, `queue_weight`, `max_tokens`, `est_input_tokens` (last field only when TPM pacing reserves) |
 | `task_retry` | A failed attempt inside a task, before the final `task_complete` | `task_id`, `attempt`, `error`, `delay_ms`, `output_tokens` (the failed attempt's reported burn; `null` for transport errors, timeouts, 429s) |
-| `task_complete` | A task finishes | always `task_id`, `status`; succeeded adds `attempts`, `duration_ms`, `input_tokens`, `output_tokens`, `cached_input_tokens`, `ttft_ms`; failed adds `attempts`, `duration_ms`, `error`; skipped adds `error` only |
-| `repair_queued` | A failure queued behind `max_concurrent_repairs` | `task_id`, `attempts`, `error`, `queue_depth` |
-| `repair_start` | An in-run repair starts | `task_id`, `attempts`, `error` |
+| `task_complete` | A task finishes | always `task_id`, `status`; succeeded adds `attempts`, `duration_ms`, `input_tokens`, `output_tokens`, `cached_input_tokens`, `ttft_ms`; failed adds `attempts`, `duration_ms`, `error`, `class`; skipped adds `error` only |
+| `repair_queued` | A failure queued behind `max_concurrent_repairs` | `task_id`, `attempts`, `error`, `class`, `queue_depth` |
+| `repair_start` | An in-run repair starts | `task_id`, `attempts`, `error`, `class` |
 | `rate_tune` | The rate auto-tuner changed the pace (opt-in) | `task_id`, `multiplier`, `observations` |
 | `run_end` | The wave drained | `succeeded`, `failed`, `skipped`, `peak_concurrency`, `output_tokens` |
 
@@ -213,6 +213,10 @@ Ordering invariants a consumer can rely on:
 - Skipped tasks appear only as `task_complete` with `status: "skipped"`
   (emitted transitively after an ancestor failure); there is no separate
   skip event.
+
+`class` is the failure class: `rate_limited`, `transport`, `content` or
+`permanent`. Only a `content` failure puts the error into the repair
+prompt. A `permanent` failure has no repair.
 
 Known limits: `task_retry` input tokens are not reported (providers do not
 bill usage on failed calls); planning tokens ride `planning_complete`, not

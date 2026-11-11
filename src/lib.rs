@@ -154,15 +154,15 @@ pub mod scheduler;
 
 pub use async_trait::async_trait;
 pub use client::{
-    BackendHealth, BudgetExhaustedError, Completion, CompletionRequest, FanOutBackend,
-    FanOutClient, HealthRoutingConfig, ModelClient, PlanningUsage, RateLimitedError,
-    UsageCountingClient,
+    report_first_token, BackendHealth, BudgetExhaustedError, Completion, CompletionRequest,
+    FanOutBackend, FanOutClient, HealthRoutingConfig, ModelClient, OverloadedError, PermanentError,
+    PlanningUsage, RateLimitedError, UsageCountingClient,
 };
 pub use control::{RunControl, TaskProgress, TaskProgressStatus};
 pub use controller::{ConcurrencyController, ControllerConfig, ControllerStats};
 pub use dag::{Plan, Task};
 pub use runner::{RunDetails, RunManager, RunRequest, RunStatus, RunSummary};
 pub use scheduler::{
-    ConcurrencyPoint, PlanningSnapshot, ProbeConfig, RunReport, SchedulerConfig, TaskRecord,
-    TaskStatus,
+    ConcurrencyPoint, FailureClass, PlanningSnapshot, ProbeConfig, RunReport, SchedulerConfig,
+    SharedLimits, TaskRecord, TaskStatus,
 };

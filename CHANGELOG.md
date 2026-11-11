@@ -6,6 +6,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-11
+
+Engine hardening release. Paired A/B runs against v0.1.0 (plan replay,
+two providers) show no regression on a 15-task build. A 48-task wave
+with an artifact validator is 44% faster on DeepSeek. Hosts that build
+`SchedulerConfig`, `TaskRecord`, `RunReport`, `FailoverConfig` or
+`HealthRoutingConfig` with a full struct literal must add the new fields.
+
 ### Added
 
 - **Anthropic provider preset** (`anthropic`): Claude models over the
@@ -15,6 +23,60 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   8. Run a paired A/B before citing any number for this preset.
 - **`llms.txt`** at the repo root: a compact integration brief an agent
   can include to wire SlimToken into any harness.
+- **Failure classes** (`FailureClass`: `rate_limited`, `transport`,
+  `content`, `permanent`). Each failed attempt has a class. The class
+  is on failed `TaskRecord`s and on the trace failure events. Two new
+  typed errors feed it: `PermanentError` (HTTP 400, 401, 403, 404, 405,
+  413, 422) and `OverloadedError` (a 5xx reply with `Retry-After`).
+- **Wasted-token accounting**: `TaskRecord.wasted_input_tokens`,
+  `wasted_output_tokens` and the `RunReport.total_wasted_*` totals count
+  the tokens of discarded attempts (truncated, unclosed fence, exhausted
+  budget, validator rejection). They are not part of `total_*_tokens`.
+- **Stream idle timeout** on the OpenAI-compatible client
+  (`--stream-idle-timeout-secs`, default 120, 0 disables) and TCP
+  keepalive.
+- **First-token reports**: `report_first_token` lets a client tell the
+  scheduler when the first token arrives. Two features use it.
+  `--controller-early-ttft` (default on) lets the controller sample
+  health at first token: -14% wall on a 48-task DeepSeek wave, neutral
+  on Muse. `--first-token-watchdog FACTOR` (opt-in) abandons an attempt
+  with no first token.
+- **Run journal and resume**: each run writes `journal.jsonl` with the
+  output of each succeeded task. `--resume-from` restores those tasks
+  with no model call. Ctrl-C on `slimtoken run` cancels the wave and
+  still writes the report.
+- **`SharedLimits`**: one set of rate and in-flight budgets for all runs
+  on one provider. `RunManager` gives it to each run.
+- **`call_timeout`** on `FailoverConfig` and `HealthRoutingConfig`, so a
+  provider that hangs is recorded as a failure.
+
+### Changed
+
+- The artifact validator runs in the task, not in the scheduler loop. A
+  slow validator no longer stops admission and stream reads.
+- Only transport failures (and 429s when the rate tuner is off) decrease
+  the concurrency limit. Content failures do not.
+- Failed attempts reach the controller when they occur, not when the
+  task completes.
+- A permanent error is not retried and not repaired.
+- A repair after a transport or rate failure sends the original request
+  again. Only a content failure adds the error to the prompt.
+- Retry jitter is different for each request. A `Retry-After` hint is
+  obeyed up to 120 s (was 30 s) and is read on 5xx replies also.
+- Precomputed (static) tasks do not use start-rate or TPM budget and do
+  not feed the controller.
+- Each task runs on its own runtime task. A panic in a host client fails
+  that task only.
+- `RunManager`: each run has its own trace and journal file, and finished
+  runs above 256 are removed from memory.
+
+### Fixed
+
+- A final `data: [DONE]` with no blank line after it is accepted.
+- Validator and test shells are killed when their timeout expires.
+- Cache primes, cache-warm canaries and the concurrency probe have a
+  timeout.
+- The failover recovery probe sends one request, not the whole wave.
 
 ## [0.1.0] - 2026-11-02
 
@@ -70,5 +132,6 @@ with their evidence, not silently dropped.
   `cargo +1.85 check --all-targets`.
 - Licensed MIT OR Apache-2.0.
 
-[Unreleased]: https://github.com/IOServicesLabs/slimtoken/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/IOServicesLabs/slimtoken/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/IOServicesLabs/slimtoken/releases/tag/v0.2.0
 [0.1.0]: https://github.com/IOServicesLabs/slimtoken/releases/tag/v0.1.0

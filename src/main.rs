@@ -68,6 +68,13 @@ struct RunArgs {
     /// Write and validate the plan, but do not execute its tasks.
     #[arg(long)]
     plan_only: bool,
+    /// Reuse the finished tasks of an interrupted or failed run: the path of
+    /// its journal.jsonl (every run writes one in its output directory).
+    /// Tasks whose id and prompt match a journal entry are restored with no
+    /// model call; the rest run as usual. Pair it with --plan (the earlier
+    /// run's plan.json) so the task ids and prompts are the same.
+    #[arg(long, value_name = "PATH")]
+    resume_from: Option<PathBuf>,
     /// Steering directive for planning and worker prompts; repeat as needed.
     #[arg(long = "steer")]
     steering: Vec<String>,
@@ -310,6 +317,13 @@ struct ClientArgs {
     /// server default.
     #[arg(long, value_parser = ["none", "minimal", "low", "medium", "high"])]
     reasoning_effort: Option<String>,
+    /// Longest silence tolerated on one model request, in seconds: waiting
+    /// for the response head, or between two stream chunks. A stalled stream
+    /// fails (and retries) within this bound instead of holding its slot for
+    /// the whole --task-timeout-secs. 0 disables. Raise it for servers that
+    /// stream nothing while a model reasons for minutes.
+    #[arg(long, default_value_t = 120)]
+    stream_idle_timeout_secs: u64,
     /// Record every provider request and response (errors included) to this
     /// JSONL file. Replay the recording later with --replay-from for
     /// zero-token, deterministic reruns of the same run.
@@ -519,6 +533,22 @@ struct SchedulerArgs {
     /// max-concurrent-repairs slots. Requires --max-concurrent-repairs.
     #[arg(long, value_name = "MS")]
     repair_inject_after_ms: Option<u64>,
+    /// Feed the adaptive controller a health sample the moment each request's
+    /// first token arrives, instead of only when the request completes. A
+    /// wave of long tasks otherwise gives the controller nothing to evaluate
+    /// until its first task finishes, so the limit sits at the cold-start
+    /// seed for a whole task duration. Default on (A/B, 48-task wave:
+    /// -14% wall on DeepSeek, neutral on Muse paced and unpaced, no added
+    /// failures); pass false to sample at completion only.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    controller_early_ttft: bool,
+    /// First-token watchdog: abandon and retry an attempt that has produced
+    /// no first token after FACTOR times the wave's median time-to-first-
+    /// token (never sooner than 5s; arms after four first tokens). A stuck
+    /// request has billed no output yet, and the wave's wall is its slowest
+    /// task. Off by default.
+    #[arg(long, value_name = "FACTOR")]
+    first_token_watchdog: Option<f64>,
 }
 
 #[derive(Args, Clone)]
@@ -650,6 +680,11 @@ impl SchedulerArgs {
             // Planning accounting is stamped by `run` after the planning
             // phase; the args-level builder leaves it unset.
             planning: None,
+            controller_early_ttft: self.controller_early_ttft,
+            first_token_watchdog: self.first_token_watchdog,
+            // Stamped per run by the caller that owns the output directory.
+            journal_path: None,
+            shared_limits: None,
         })
     }
 }
@@ -888,7 +923,8 @@ async fn run(mut args: RunArgs) -> Result<()> {
                     .map_err(|message| anyhow::anyhow!(message))?;
                 let client: Arc<dyn ModelClient> = Arc::new(
                     OpenAiClient::new(preset.base_url, preset.model, Some(key))?
-                        .with_stream_usage(args.client.stream_usage),
+                        .with_stream_usage(args.client.stream_usage)
+                        .with_stream_idle_timeout(stream_idle_timeout(&args.client))?,
                 );
                 backends.push(slimtoken::FanOutBackend::new(
                     preset.name,
@@ -899,7 +935,18 @@ async fn run(mut args: RunArgs) -> Result<()> {
             let pool = slimtoken::FanOutClient::new(backends)?;
             // opt-in circuit-breaker routing over the sticky hash route.
             let pool = if args.client.fanout_health {
-                pool.with_health_routing(slimtoken::HealthRoutingConfig::default())
+                // Bound each backend call just inside the scheduler's own
+                // per-attempt timeout, so a hung backend records a failure
+                // instead of being cancelled unseen.
+                let task_timeout = Duration::from_secs(args.scheduler.task_timeout_secs);
+                pool.with_health_routing(slimtoken::HealthRoutingConfig {
+                    call_timeout: Some(
+                        task_timeout
+                            .saturating_sub(Duration::from_secs(2))
+                            .max(Duration::from_secs(1)),
+                    ),
+                    ..slimtoken::HealthRoutingConfig::default()
+                })
             } else {
                 pool
             };
@@ -1117,6 +1164,27 @@ async fn run(mut args: RunArgs) -> Result<()> {
         input_tokens: counted_planning.input_tokens,
         output_tokens: counted_planning.output_tokens,
         cached_input_tokens: counted_planning.cached_input_tokens,
+    });
+
+    // Read the earlier run's journal BEFORE this run opens its own: resuming
+    // into the same output directory rewrites that file.
+    if let Some(journal) = &args.resume_from {
+        let restored = slimtoken::scheduler::resume_plan_from_journal(&mut plan, journal)?;
+        info!(restored, tasks = plan.tasks.len(), journal = %journal.display(), "resumed finished tasks from journal");
+    }
+    config.journal_path = Some(args.output.join("journal.jsonl"));
+
+    // First Ctrl-C cancels the wave: in-flight requests are dropped and the
+    // report (with what finished) is still written. A second one exits.
+    let interrupt = control.clone();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            eprintln!("interrupt: cancelling the run (Ctrl-C again to exit now)");
+            interrupt.cancel();
+            if tokio::signal::ctrl_c().await.is_ok() {
+                std::process::exit(130);
+            }
+        }
     });
 
     let test_cmd = args.scheduler.test_cmd.clone();
@@ -1850,7 +1918,22 @@ async fn serve(args: ServeArgs) -> Result<()> {
             manager.cancel(&summary.id);
         }
     }
+    // Give the cancelled runs a moment to record their final state and write
+    // their reports before the process exits under them.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline
+        && manager
+            .list()
+            .iter()
+            .any(|summary| !summary.status.is_terminal())
+    {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     Ok(())
+}
+
+fn stream_idle_timeout(args: &ClientArgs) -> Option<Duration> {
+    (args.stream_idle_timeout_secs > 0).then(|| Duration::from_secs(args.stream_idle_timeout_secs))
 }
 
 fn make_client(
@@ -1875,7 +1958,8 @@ fn make_client(
             .or_else(|| std::env::var("OPENAI_API_KEY").ok());
         Arc::new(
             OpenAiClient::new(&args.base_url, args.model.clone(), api_key)?
-                .with_stream_usage(args.stream_usage),
+                .with_stream_usage(args.stream_usage)
+                .with_stream_idle_timeout(stream_idle_timeout(args))?,
         )
     };
     if let Some(path) = &args.record_to {
@@ -2208,6 +2292,8 @@ mod tests {
             total_output_tokens: 3,
             total_reasoning_tokens: None,
             total_cached_input_tokens: None,
+            total_wasted_input_tokens: 0,
+            total_wasted_output_tokens: 0,
             mean_time_to_first_token_ms: None,
             aggregate_output_tokens_per_second: 0.0,
             aggregate_total_tokens_per_second: 0.0,
@@ -2238,6 +2324,9 @@ mod tests {
                     finish_reason: Some("stop".into()),
                     usage_is_estimated: false,
                     time_to_first_token_ms: None,
+                    failure_class: None,
+                    wasted_input_tokens: 0,
+                    wasted_output_tokens: 0,
                 },
             );
         }

@@ -7,7 +7,7 @@ use crate::dag::Plan;
 use crate::planner::{generate_plan_with_steering, mock_plan};
 use crate::profile::{DurationProfile, MaxTokensProfile};
 use crate::scheduler::{
-    execute_plan_with_control, ProbeConfig, RunReport, SchedulerConfig, TaskStatus,
+    execute_plan_with_control, ProbeConfig, RunReport, SchedulerConfig, SharedLimits, TaskStatus,
 };
 use anyhow::{bail, Context, Result};
 use futures::FutureExt;
@@ -86,6 +86,14 @@ pub struct SchedulerOverrides {
     /// otherwise claim. Requires max_concurrent_repairs.
     #[serde(default)]
     pub repair_inject_after_ms: Option<u64>,
+    /// Feed the adaptive controller a health sample at each request's first
+    /// token instead of only at completion.
+    #[serde(default)]
+    pub controller_early_ttft: Option<bool>,
+    /// First-token watchdog factor: abandon and retry an attempt with no
+    /// first token after this multiple of the wave's median TTFT.
+    #[serde(default)]
+    pub first_token_watchdog: Option<f64>,
 }
 
 impl SchedulerOverrides {
@@ -145,6 +153,12 @@ impl SchedulerOverrides {
             trace_path: base.trace_path.clone(),
             repair_error_chars: base.repair_error_chars,
             planning: base.planning.clone(),
+            controller_early_ttft: self
+                .controller_early_ttft
+                .unwrap_or(base.controller_early_ttft),
+            first_token_watchdog: self.first_token_watchdog.or(base.first_token_watchdog),
+            journal_path: base.journal_path.clone(),
+            shared_limits: base.shared_limits.clone(),
         }
     }
 }
@@ -304,7 +318,16 @@ struct ManagerInner {
     output_root: PathBuf,
     mock_planner: bool,
     runs: RwLock<HashMap<String, Arc<RunRecord>>>,
+    /// One set of rate and in-flight budgets for every run of this manager:
+    /// they all talk to the same provider through `client`, which enforces
+    /// its limits per key, not per run.
+    limits: SharedLimits,
 }
+
+/// Finished runs kept in memory for status and report queries. Older
+/// finished runs are evicted (their plan.json and report.json stay on disk);
+/// a long-lived server would otherwise hold every report it ever produced.
+const MAX_RETAINED_RUNS: usize = 256;
 
 /// Shared asynchronous run store used by both the interactive CLI and REST API.
 #[derive(Clone)]
@@ -319,6 +342,13 @@ impl RunManager {
         output_root: PathBuf,
         mock_planner: bool,
     ) -> Self {
+        let limits = base_config.shared_limits.clone().unwrap_or_else(|| {
+            SharedLimits::new(
+                base_config.max_concurrency,
+                base_config.max_starts_per_minute,
+                base_config.max_tokens_per_minute,
+            )
+        });
         Self {
             inner: Arc::new(ManagerInner {
                 client,
@@ -326,7 +356,34 @@ impl RunManager {
                 output_root,
                 mock_planner,
                 runs: RwLock::new(HashMap::new()),
+                limits,
             }),
+        }
+    }
+
+    /// Drop the oldest finished runs beyond `MAX_RETAINED_RUNS`. Active runs
+    /// are never evicted.
+    fn evict_finished_runs(&self) {
+        let mut runs = self.inner.runs.write().expect("run store lock");
+        if runs.len() <= MAX_RETAINED_RUNS {
+            return;
+        }
+        let mut finished: Vec<(u64, String)> = runs
+            .values()
+            .filter(|record| {
+                record
+                    .state
+                    .read()
+                    .expect("run state lock")
+                    .status
+                    .is_terminal()
+            })
+            .map(|record| (record.created_at_ms, record.id.clone()))
+            .collect();
+        finished.sort();
+        let excess = runs.len() - MAX_RETAINED_RUNS;
+        for (_, id) in finished.into_iter().take(excess) {
+            runs.remove(&id);
         }
     }
 
@@ -370,6 +427,7 @@ impl RunManager {
             .write()
             .expect("run store lock")
             .insert(id, Arc::clone(&record));
+        self.evict_finished_runs();
 
         let manager = self.clone();
         tokio::spawn(async move {
@@ -482,6 +540,16 @@ impl RunManager {
         }
 
         record.set_state(RunStatus::Running, None);
+        let mut config = config;
+        // Every run of this manager shares one provider, so they share its
+        // rate and in-flight budgets.
+        config.shared_limits = Some(self.inner.limits.clone());
+        // Per-run files: one trace path for every run would have each new
+        // run truncate the trace of the ones still writing.
+        if config.trace_path.is_some() {
+            config.trace_path = Some(record.output_dir.join("trace.jsonl"));
+        }
+        config.journal_path = Some(record.output_dir.join("journal.jsonl"));
         let report = execute_plan_with_control(
             &plan,
             Arc::clone(&self.inner.client),

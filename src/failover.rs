@@ -25,6 +25,13 @@ pub struct FailoverConfig {
     /// the primary again: success drains back, failure re-drains. `None`
     /// stays on the fallback for the rest of the run (sticky).
     pub probe_after: Option<Duration>,
+    /// Bound on one primary call. A caller-side timeout (the scheduler's
+    /// per-attempt timeout) cancels the call without an error ever reaching
+    /// this wrapper, so a HUNG primary is invisible to the drain unless the
+    /// call is bounded here. Set it below the scheduler's `task_timeout`.
+    /// `None` (default) leaves the primary unbounded: only errors the inner
+    /// client returns count.
+    pub call_timeout: Option<Duration>,
 }
 
 impl Default for FailoverConfig {
@@ -32,6 +39,7 @@ impl Default for FailoverConfig {
         Self {
             error_threshold: 3,
             probe_after: Some(Duration::from_secs(60)),
+            call_timeout: None,
         }
     }
 }
@@ -50,7 +58,19 @@ pub struct FailoverStats {
 struct Inner {
     consecutive_errors: u32,
     on_fallback_since: Option<Instant>,
+    /// A recovery probe is on the primary right now.
+    probing: bool,
     stats: FailoverStats,
+}
+
+struct ProbeGuard<'a>(&'a Mutex<Inner>);
+
+impl Drop for ProbeGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut inner) = self.0.lock() {
+            inner.probing = false;
+        }
+    }
 }
 
 pub struct FailoverClient {
@@ -98,10 +118,15 @@ impl ModelClient for FailoverClient {
             Fallback,
         }
         let route = {
-            let inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.lock().unwrap();
             match inner.on_fallback_since {
                 Some(since) => match self.config.probe_after {
-                    Some(window) if since.elapsed() >= window => Route::Probe,
+                    // Single-flight: one request probes; the rest of the
+                    // wave stays on the fallback until the probe reports.
+                    Some(window) if since.elapsed() >= window && !inner.probing => {
+                        inner.probing = true;
+                        Route::Probe
+                    }
                     _ => Route::Fallback,
                 },
                 None => Route::Primary,
@@ -116,9 +141,26 @@ impl ModelClient for FailoverClient {
             // instead of flapping between two dead providers.
             return self.fallback.complete(request).await;
         }
+        // Clears the probe flag however this call ends, including a caller
+        // that drops the future mid-probe.
+        let _probe = matches!(route, Route::Probe).then_some(ProbeGuard(&self.inner));
 
         self.inner.lock().unwrap().stats.primary_calls += 1;
-        match self.primary.complete(request.clone()).await {
+        let primary = self.primary.complete(request.clone());
+        let outcome = match self.config.call_timeout {
+            // The scheduler's own timeout DROPS this future, so a hung
+            // primary would never reach the error arm below; bounding the
+            // call here turns the hang into an error the drain can count.
+            Some(limit) => match tokio::time::timeout(limit, primary).await {
+                Ok(outcome) => outcome,
+                Err(_) => Err(anyhow::anyhow!(
+                    "primary provider timed out after {} ms",
+                    limit.as_millis()
+                )),
+            },
+            None => primary.await,
+        };
+        match outcome {
             Ok(completion) => {
                 let mut inner = self.inner.lock().unwrap();
                 inner.consecutive_errors = 0;
@@ -237,6 +279,7 @@ mod tests {
             FailoverConfig {
                 error_threshold: 2,
                 probe_after: None,
+                call_timeout: None,
             },
         );
         // Attempt 1: below threshold, the error surfaces for the scheduler.
@@ -264,6 +307,7 @@ mod tests {
             FailoverConfig {
                 error_threshold: 2,
                 probe_after: Some(Duration::from_millis(20)),
+                call_timeout: None,
             },
         );
         assert!(client.complete(request()).await.is_err());
@@ -321,6 +365,7 @@ mod tests {
             FailoverConfig {
                 error_threshold: 1,
                 probe_after: None,
+                call_timeout: None,
             },
         ));
         let client_b: Arc<dyn ModelClient> = failover.clone();
@@ -334,5 +379,56 @@ mod tests {
         assert_eq!(stats.fallback_calls, 4);
         assert!(stats.switches >= 1);
         assert!((1..=4).contains(&stats.primary_calls));
+    }
+
+    struct Hang;
+    #[async_trait]
+    impl ModelClient for Hang {
+        async fn complete(&self, _request: CompletionRequest) -> Result<Completion> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn hung_primary_counts_as_an_error_and_drains() {
+        let client = FailoverClient::new(
+            Arc::new(Hang),
+            Arc::new(Healthy),
+            FailoverConfig {
+                error_threshold: 1,
+                probe_after: None,
+                call_timeout: Some(Duration::from_millis(20)),
+            },
+        );
+        assert!(client.complete(request()).await.is_ok());
+        let stats = client.stats();
+        assert_eq!(stats.primary_errors, 1);
+        assert_eq!(stats.switches, 1);
+        assert_eq!(stats.fallback_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn only_one_request_probes_the_primary() {
+        let client = Arc::new(FailoverClient::new(
+            Arc::new(Hang),
+            Arc::new(Healthy),
+            FailoverConfig {
+                error_threshold: 1,
+                probe_after: Some(Duration::from_millis(10)),
+                call_timeout: Some(Duration::from_millis(60)),
+            },
+        ));
+        assert!(client.complete(request()).await.is_ok()); // drains
+        tokio::time::sleep(Duration::from_millis(15)).await;
+        let before = client.stats().primary_calls;
+        let wave = (0..6).map(|_| client.complete(request()));
+        for result in futures::future::join_all(wave).await {
+            assert!(result.is_ok());
+        }
+        assert_eq!(
+            client.stats().primary_calls - before,
+            1,
+            "one probe, not the whole wave"
+        );
     }
 }
