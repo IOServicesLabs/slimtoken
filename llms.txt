@@ -1,0 +1,91 @@
+# SlimToken
+
+> SlimToken is a Rust engine that plans an objective into a task DAG and runs
+> the DAG as one parallel wave of model calls. An adaptive controller sets
+> the in-flight width. A repair wave fixes failed tasks with the error as
+> context. The engine is provider-neutral: every model call goes through one
+> `ModelClient` trait. A host harness owns model wiring, gates, and judgment.
+
+Measured on Muse and DeepSeek, 2026-10 to 2026-11:
+
+- A 20-file app, plan to files: about 13 s wall on DeepSeek.
+- Aggregate output rate, one wave: about 1,500 to 1,800 tok/s. One stream
+  alone gives about 130 to 150 tok/s.
+- Concurrency knee (Muse): 1,147 tok/s at 32 streams. Knee at 24 to 32.
+- Largest-first admission: minus 25.7% wave time on Muse.
+- Patience-bounded repair injection: minus 31% retry volume.
+
+## Install
+
+- Engine: `cargo build --release` in this repo. The binary is
+  `target/release/slimtoken` (or `slimtoken.exe` on Windows).
+- QA sidecar: `npm install --global sidecars/qa`, then
+  `slimtoken-qa validate --strict build/`.
+- Library: `slimtoken = { path = "." }` in a Rust host, or the crates.io
+  package when it publishes.
+
+## Run from the CLI
+
+```
+slimtoken run --architect --objective "Build a Python CLI that ..." \
+  --provider deepseek --output slimtoken-out \
+  --test-cmd "python -I check-build.py <deps-dir>"
+```
+
+Providers are presets. A preset fills the base URL, model, worker effort,
+planner effort, planner schema, and the key env var.
+
+| Preset | Base URL | Model | Key env var |
+|---|---|---|---|
+| `muse` | `https://api.meta.ai/v1` | muse-spark-1.3-contributor | `MUSE_API_KEY` |
+| `deepseek` | `https://api.deepseek.com/v1` | deepseek-flash | `DEEPSEEK_API_KEY` |
+| `anthropic` | `https://api.anthropic.com/v1` | claude-sonnet-5-5 | `ANTHROPIC_API_KEY` |
+
+The `anthropic` preset pins conservative starting points, not measurements:
+effort `low`, planner schema off, burst cap 8. Any other OpenAI-compatible
+server works with `--base-url URL --model NAME`; SlimToken appends
+`/chat/completions` to the base URL. Put the key in `--api-key` or in
+`OPENAI_API_KEY`. Never put a key in a file that git tracks.
+
+The engine and the harness can use different models. A harness can run its
+own management model and hand all worker tasks to SlimToken with a cheap
+fast model. Each model is a separate `--provider` (or a separate
+`slimtoken serve` instance). A run never switches models mid-run.
+
+## Embed in a harness
+
+Two seams. Pick one.
+
+1. **REST, no Rust**: `slimtoken serve --port 8080` (build with
+   `--features serve`). The host POSTs a run to `/v1/runs`, polls
+   `/v1/runs/{id}`, and reads `/v1/runs/{id}/report`. One serve instance
+   serves one model; run several instances to split models. Full contract:
+   [API.md](API.md).
+2. **Rust library**: implement `ModelClient` (or wrap the shipped
+   OpenAI-compatible client) and pass `Arc<dyn ModelClient>` to
+   `RunManager::new`. The engine owns planning, waves, cache priming, and
+   repair; the host owns the model, the optional stack profile, the
+   assembled deliverable, and the gate command. Reference loop:
+   [examples/host-harness.rs](examples/host-harness.rs). Full guide:
+   [EMBEDDING.md](EMBEDDING.md).
+
+## Capabilities as sidecar packs
+
+Sidecar packs bolt onto the engine or onto build output. They are separate
+npm packages under `sidecars/`. They never enter the engine core. Packs
+ship a gate command, a report, and a JSON twin; most spend zero model
+tokens. Catalog and extension contract: [sidecars/README.md](sidecars/README.md).
+
+## Evidence rule
+
+No performance claim ships without a paired A/B run on the same workload.
+Numbers above are such pairs, one arm off and one arm on, interleaved.
+
+## Docs
+
+- [README.md](README.md): full quick start, commands, flags.
+- [EMBEDDING.md](EMBEDDING.md): library integration for host harnesses.
+- [API.md](API.md): the `slimtoken serve` REST contract.
+- [ENGINE.md](ENGINE.md): how the wave, controller, and repair work.
+- [CHANGELOG.md](CHANGELOG.md): what changed, release by release.
+- [sidecars/README.md](sidecars/README.md): the capability packs.

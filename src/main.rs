@@ -263,8 +263,10 @@ struct ClientArgs {
     /// effort and schema, and the API-key env var. muse: muse-spark-1.3,
     /// effort minimal, strict planner schema. deepseek: deepseek-flash,
     /// effort none (thinking off), free-JSON planner; key from
-    /// DEEPSEEK_API_KEY.
-    #[arg(long, value_parser = ["muse", "deepseek"])]
+    /// DEEPSEEK_API_KEY. anthropic: claude-sonnet-5-5 over the OpenAI-
+    /// compatible layer, effort low, conservative unmeasured starting
+    /// points; key from ANTHROPIC_API_KEY.
+    #[arg(long, value_parser = ["muse", "deepseek", "anthropic"])]
     provider: Option<String>,
     /// Fan the worker wave out over several provider presets, comma-separated
     /// (e.g. muse,deepseek). Each task routes to one backend by a stable hash
@@ -272,7 +274,8 @@ struct ClientArgs {
     /// applies its own measured reasoning effort. The FIRST entry also serves
     /// planning (manifest + plan), since planner settings (schema, effort) are
     /// provider-specific. Keys come from each preset's env var
-    /// (MUSE_API_KEY, DEEPSEEK_API_KEY). Conflicts with --provider, --mock
+    /// (MUSE_API_KEY, DEEPSEEK_API_KEY, ANTHROPIC_API_KEY). Conflicts with
+    /// --provider, --mock
     /// and --replay-from; report.json records the serving backend per task.
     #[arg(long, value_delimiter = ',')]
     fanout: Option<Vec<String>>,

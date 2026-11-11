@@ -11,8 +11,8 @@ use crate::architect::{ArchitectOptions, SINGLE_RESPONSE_THRESHOLD_TOKENS};
 use crate::controller::{ControllerConfig, DEFAULT_COLD_START_BURST_CAP};
 use crate::scheduler::SchedulerConfig;
 
-/// One provider's measured defaults. Every value cites its ABBA run in the
-/// field docs; nothing here is a guess.
+/// One provider's defaults. Measured presets cite their ABBA run in the field
+/// docs; the Anthropic preset pins labeled starting points instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProviderPreset {
     /// Lookup name for `--provider` and `provider_preset`.
@@ -75,10 +75,30 @@ pub const DEEPSEEK_PRESET: ProviderPreset = ProviderPreset {
     key_env: "DEEPSEEK_API_KEY",
 };
 
-/// All known presets.
-pub const PROVIDER_PRESETS: &[ProviderPreset] = &[MUSE_PRESET, DEEPSEEK_PRESET];
+/// api.anthropic.com (OpenAI-compatible layer), claude-sonnet-5-5. Starting
+/// points, not measurements: effort `low` maps to a small thinking budget on
+/// the compat layer, schema stays off until a paired run proves it accepted,
+/// and the burst cap is conservative for the standard rate tiers. Key from
+/// ANTHROPIC_API_KEY.
+pub const ANTHROPIC_PRESET: ProviderPreset = ProviderPreset {
+    name: "anthropic",
+    base_url: "https://api.anthropic.com/v1",
+    model: "claude-sonnet-5-5",
+    worker_effort: "low",
+    architect_effort: "low",
+    architect_schema: false,
+    cold_burst_cap: 8,
+    single_response_threshold: SINGLE_RESPONSE_THRESHOLD_TOKENS,
+    key_env: "ANTHROPIC_API_KEY",
+};
 
-/// Look up a preset by name (`muse`, `deepseek`). Unknown names return None.
+/// All known presets. Muse and DeepSeek presets carry ABBA-measured values.
+/// The Anthropic preset pins conservative starting points: its knobs are not
+/// measured on this engine yet, so cite no numbers for it until a paired run.
+pub const PROVIDER_PRESETS: &[ProviderPreset] = &[MUSE_PRESET, DEEPSEEK_PRESET, ANTHROPIC_PRESET];
+
+/// Look up a preset by name (`muse`, `deepseek`, `anthropic`). Unknown names
+/// return None.
 pub fn provider_preset(name: &str) -> Option<ProviderPreset> {
     PROVIDER_PRESETS
         .iter()
@@ -146,10 +166,15 @@ mod tests {
     fn lookup_resolves_known_names_and_rejects_unknown() {
         assert_eq!(provider_preset("muse"), Some(MUSE_PRESET));
         assert_eq!(provider_preset("deepseek"), Some(DEEPSEEK_PRESET));
+        assert_eq!(provider_preset("anthropic"), Some(ANTHROPIC_PRESET));
         assert_eq!(provider_preset("openai"), None);
         assert_eq!(provider_preset(""), None);
         let names: Vec<&str> = PROVIDER_PRESETS.iter().map(|preset| preset.name).collect();
-        assert_eq!(names, vec!["muse", "deepseek"], "names stay unique");
+        assert_eq!(
+            names,
+            vec!["muse", "deepseek", "anthropic"],
+            "names stay unique"
+        );
     }
 
     #[test]
@@ -171,6 +196,17 @@ mod tests {
         assert_eq!(DEEPSEEK_PRESET.cold_burst_cap, 16);
         assert!(DEEPSEEK_PRESET.single_response_threshold < 13_000);
         assert_eq!(DEEPSEEK_PRESET.worker_effort, "none");
+
+        // Anthropic pins starting points, not measurements: keep them
+        // conservative until a paired run replaces them with measured values.
+        assert_eq!(ANTHROPIC_PRESET.worker_effort, "low");
+        assert_eq!(ANTHROPIC_PRESET.architect_effort, "low");
+        assert!(
+            !ANTHROPIC_PRESET.architect_schema,
+            "schema stays off until the compat layer proves it in a paired run"
+        );
+        assert!(ANTHROPIC_PRESET.cold_burst_cap <= 8, "conservative start");
+        assert_eq!(ANTHROPIC_PRESET.key_env, "ANTHROPIC_API_KEY");
     }
 
     #[test]

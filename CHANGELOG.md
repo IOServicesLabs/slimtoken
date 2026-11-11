@@ -6,6 +6,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Anthropic provider preset** (`anthropic`): Claude models over the
+  OpenAI-compatible layer at `https://api.anthropic.com/v1`, key from
+  `ANTHROPIC_API_KEY`. The pinned knobs are conservative starting
+  points, not measurements: effort `low`, planner schema off, burst cap
+  8. Run a paired A/B before citing any number for this preset.
+- **`llms.txt`** at the repo root: a compact integration brief an agent
+  can include to wire SlimToken into any harness.
+
 ## [0.1.0] - 2026-11-02
 
 First tracked release. The engine is the result of four measured

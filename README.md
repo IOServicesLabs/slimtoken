@@ -149,6 +149,7 @@ slimtoken run --provider deepseek --architect --sink assemble \
 |---|---|---|
 | `deepseek` | `https://api.deepseek.com/v1` | Use reasoning effort `none`. Approximately 290 tokens/s for each stream. |
 | `muse` | `https://api.meta.ai/v1` | Use reasoning effort `minimal` or `low`. Limit: 150 requests per minute. |
+| `anthropic` | `https://api.anthropic.com/v1` | Claude models over the OpenAI-compatible layer. Key from `ANTHROPIC_API_KEY`. Starting points, not measured: effort `low`, schema off, conservative burst cap. |
 | Any OpenAI-compatible server | `--base-url` | SlimToken adds `/chat/completions` to the base URL. |
 
 Put the key in `--api-key` or in `OPENAI_API_KEY`. Do not put a key in a

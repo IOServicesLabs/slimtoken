@@ -44,7 +44,7 @@ struct Args {
     /// library defaults (host planning measured 26-80s vs 4.1s before this).
     /// Explicit flags still win. Without it the host wires the provider by
     /// hand with --base-url / --model / --key-env.
-    #[arg(long, value_parser = ["muse", "deepseek"])]
+    #[arg(long, value_parser = ["muse", "deepseek", "anthropic"])]
     provider: Option<String>,
     #[arg(long, default_value = "https://api.meta.ai/v1")]
     base_url: String,
