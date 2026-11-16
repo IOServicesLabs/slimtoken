@@ -964,16 +964,55 @@ const VISIBILITY_EVAL = `(() => {
     window: "rgb(255, 255, 255)",
   };
 
+  // Any CSS colour to [r, g, b, a] (a in 0..1). rgb()/rgba() in either
+  // syntax are read directly; everything else (oklch(), color(), lab(),
+  // keywords) goes through a 1x1 canvas, so it reads the way it paints.
   // getComputedStyle resolves system colors to rgb() in Chrome; the map is
   // the fallback for engines that return the keyword.
-  function parseRGB(css) {
+  const colorCache = new Map();
+  let paint = null;
+  function parseRGBA(css) {
     if (!css) return null;
     const s = String(css).trim().toLowerCase();
-    if (SYSTEM[s]) return parseRGB(SYSTEM[s]);
-    if (s === "transparent" || s === "rgba(0, 0, 0, 0)") return null;
-    const parts = s.slice(s.indexOf("(") + 1, s.lastIndexOf(")")).split(",");
-    if (parts.length < 3) return null;
-    return [clamp(+parts[0] || 0, 0, 255), clamp(+parts[1] || 0, 0, 255), clamp(+parts[2] || 0, 0, 255)];
+    if (colorCache.has(s)) return colorCache.get(s);
+    let out = null;
+    const src = SYSTEM[s] || s;
+    const m = src.match(/^rgba?\\(\\s*([\\d.]+)[\\s,]+([\\d.]+)[\\s,]+([\\d.]+)(?:\\s*[,/]\\s*([\\d.]+)(%?))?\\s*\\)$/);
+    if (m) {
+      const a = m[4] === undefined ? 1 : m[5] ? +m[4] / 100 : +m[4];
+      out = [clamp(+m[1], 0, 255), clamp(+m[2], 0, 255), clamp(+m[3], 0, 255), clamp(a, 0, 1)];
+    } else if (src === "transparent") {
+      out = [0, 0, 0, 0];
+    } else {
+      try {
+        if (!paint) {
+          const c = document.createElement("canvas");
+          c.width = 1;
+          c.height = 1;
+          paint = c.getContext("2d", { willReadFrequently: true });
+        }
+        paint.clearRect(0, 0, 1, 1);
+        paint.fillStyle = "rgba(0, 0, 0, 0)";
+        paint.fillStyle = src;
+        paint.fillRect(0, 0, 1, 1);
+        const d = paint.getImageData(0, 0, 1, 1).data;
+        out = [d[0], d[1], d[2], d[3] / 255];
+      } catch { out = null; }
+    }
+    colorCache.set(s, out);
+    return out;
+  }
+
+  // The opaque colour, or null for a fully transparent one.
+  function parseRGB(css) {
+    const c = parseRGBA(css);
+    return c && c[3] > 0 ? c.slice(0, 3) : null;
+  }
+
+  // top (with alpha) painted over the opaque colour under it.
+  function blend(top, under) {
+    const a = top[3];
+    return [0, 1, 2].map((i) => top[i] * a + under[i] * (1 - a));
   }
 
   function luminance(rgb) {
@@ -1009,19 +1048,29 @@ const VISIBILITY_EVAL = `(() => {
     return cs.display !== "none" && cs.visibility !== "hidden";
   }
 
-  // Effective background: nearest ancestor with an opaque color; page
-  // default treated as white Canvas (headless defaults to light scheme).
+  // Effective background: the element's own background, then its
+  // ancestors' (the root's included), blending each semi-transparent layer
+  // down to the first opaque one; an empty canvas is white (headless defaults
+  // to the light scheme). 2026-11-16: starting at the PARENT measured white
+  // text on a blue button against the white page (1.0:1) and failed a page
+  // that read perfectly.
   function backgroundBehind(el) {
-    let cur = el.parentElement;
+    const layers = [];
+    let cur = el;
     let overImage = false;
-    while (cur && cur !== document.documentElement) {
+    while (cur) {
       const cs = getComputedStyle(cur);
       if (cs.backgroundImage && cs.backgroundImage !== "none") overImage = true;
-      const bg = parseRGB(cs.backgroundColor);
-      if (bg) return { bg, overImage };
+      const c = parseRGBA(cs.backgroundColor);
+      if (c && c[3] > 0) {
+        layers.push(c);
+        if (c[3] >= 0.999) break;
+      }
       cur = cur.parentElement;
     }
-    return { bg: [255, 255, 255], overImage };
+    let bg = [255, 255, 255];
+    for (let i = layers.length - 1; i >= 0; i -= 1) bg = blend(layers[i], bg);
+    return { bg, overImage };
   }
 
   const VW = window.innerWidth;
@@ -1048,8 +1097,9 @@ const VISIBILITY_EVAL = `(() => {
     }
     const behind = backgroundBehind(el);
     if (behind.overImage) { SKIPPED.textOverImage += 1; continue; }
-    const fg = parseRGB(getComputedStyle(el).color);
-    if (!fg) { SKIPPED.hidden += 1; continue; }
+    const fgc = parseRGBA(getComputedStyle(el).color);
+    if (!fgc || fgc[3] === 0) { SKIPPED.hidden += 1; continue; }
+    const fg = blend(fgc, behind.bg);
     const ratio = contrast(fg, behind.bg);
     const entry = { selector: cssPath(el), text: text.slice(0, 60), ratio: +ratio.toFixed(2) };
     if (ratio <= 1.05) contrastFailures.push(entry);

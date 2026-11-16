@@ -17,7 +17,7 @@
     "README.md"
   ],
   "scripts": {
-    "selftest": "node bin/slimtoken-qa.mjs help && node --check lib/qa-smoke.mjs && node --check lib/qa-flow.mjs && node --check lib/qa-cdp.mjs && node --check lib/validate.mjs && node test/audit-ext.mjs"
+    "selftest": "node bin/slimtoken-qa.mjs help && node --check lib/qa-smoke.mjs && node --check lib/qa-flow.mjs && node --check lib/qa-cdp.mjs && node --check lib/validate.mjs && node test/audit-ext.mjs && node test/contrast.mjs"
   },
   "keywords": [
     "qa",
