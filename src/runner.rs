@@ -1,14 +1,13 @@
-use crate::architect::generate_manifest_plan_with_options;
+use crate::architect::{generate_manifest_plan_with_options, ArchitectOptions, PlanOptions};
 use crate::client::ModelClient;
 use crate::control::{
     unix_time_ms, validate_steering, RunControl, TaskProgress, TaskProgressStatus,
 };
 use crate::dag::Plan;
+use crate::pipeline::{build, BuildHooks, BuildOptions, Cancelled, PlanSource};
 use crate::planner::{generate_plan_with_steering, mock_plan};
-use crate::profile::{DurationProfile, MaxTokensProfile};
-use crate::scheduler::{
-    execute_plan_with_control, ProbeConfig, RunReport, SchedulerConfig, SharedLimits, TaskStatus,
-};
+use crate::profile::{DurationProfile, MaxTokensProfile, Profile};
+use crate::scheduler::{ProbeConfig, RunReport, SchedulerConfig, SharedLimits, TaskStatus};
 use anyhow::{bail, Context, Result};
 use futures::FutureExt;
 use serde::{Deserialize, Serialize};
@@ -151,6 +150,7 @@ impl SchedulerOverrides {
             cache_warm_poll: base.cache_warm_poll,
             cache_warm_budget: base.cache_warm_budget,
             trace_path: base.trace_path.clone(),
+            trace_append: base.trace_append,
             repair_error_chars: base.repair_error_chars,
             planning: base.planning.clone(),
             controller_early_ttft: self
@@ -159,6 +159,9 @@ impl SchedulerOverrides {
             first_token_watchdog: self.first_token_watchdog.or(base.first_token_watchdog),
             journal_path: base.journal_path.clone(),
             shared_limits: base.shared_limits.clone(),
+            continue_truncated: base.continue_truncated,
+            continue_runaway_tokens: base.continue_runaway_tokens,
+            file_min_tokens: base.file_min_tokens,
         }
     }
 }
@@ -182,7 +185,20 @@ pub struct RunRequest {
     pub architect: bool,
     #[serde(default)]
     pub scheduler: Option<SchedulerOverrides>,
+    /// Architect mode: stack profile by name (`Profile::named`); `None`
+    /// detects it from the objective. Setting it (or `plan_options`) plans
+    /// like the CLI, which also runs the profile's `normalize_manifest`.
+    #[serde(default)]
+    pub profile: Option<String>,
+    /// Architect mode: plan-shaping knobs. Setting the field at all, even to
+    /// `{}`, plans like the CLI (with `normalize_manifest`); leaving it out
+    /// together with `profile` builds the plan exactly as before.
+    #[serde(default)]
+    pub plan_options: Option<PlanOptions>,
 }
+
+/// Highest `plan_options.quota_pct` a request may ask for (10x the demand).
+const MAX_QUOTA_PCT: u64 = 1000;
 
 impl RunRequest {
     pub fn validate(&self) -> Result<()> {
@@ -201,6 +217,30 @@ impl RunRequest {
         }
         if let Some(overrides) = &self.scheduler {
             overrides.resolve(&SchedulerConfig::default()).validate()?;
+        }
+        if !self.architect && (self.profile.is_some() || self.plan_options.is_some()) {
+            bail!("profile and plan_options need architect mode");
+        }
+        if let Some(name) = &self.profile {
+            if Profile::named(name).is_none() {
+                bail!("unknown profile {name:?}");
+            }
+        }
+        if let Some(options) = &self.plan_options {
+            if options.quota_pct > MAX_QUOTA_PCT {
+                bail!("plan_options.quota_pct must be at most {MAX_QUOTA_PCT}");
+            }
+            if options.min_test_shards > 256 {
+                bail!("plan_options.min_test_shards must be at most 256");
+            }
+            if let Some((year, month, day)) = options.today {
+                if !(1..=9999).contains(&year)
+                    || !(1..=12).contains(&month)
+                    || !(1..=31).contains(&day)
+                {
+                    bail!("plan_options.today must be [year, month, day] with year 1-9999, month 1-12 and day 1-31");
+                }
+            }
         }
         Ok(())
     }
@@ -468,19 +508,33 @@ impl RunManager {
     ) -> Result<()> {
         record.set_state(RunStatus::Planning, None);
         debug!(run_id = %record.id, mock = self.inner.mock_planner, "planning run");
-        let plan = if let Some(plan) = request.plan.clone() {
-            plan
+        let cancelled = || {
+            record.set_state(
+                RunStatus::Cancelled,
+                Some("cancelled during planning".into()),
+            );
+        };
+        // Every path plans through `pipeline::build`: the plans this module
+        // makes itself go in as given plans, and a request that names a
+        // profile or plan options plans in `build` (`plan_project`).
+        let mut options = BuildOptions {
+            control: record.control.clone(),
+            ..BuildOptions::default()
+        };
+        if let Some(plan) = request.plan.clone() {
+            options.source = PlanSource::Given(plan);
         } else {
             let objective = request.objective.as_deref().context("objective missing")?;
             if self.inner.mock_planner {
-                mock_plan(objective)
+                options.source = PlanSource::Given(mock_plan(objective));
             } else if request.architect {
                 // Size router: deliverables that fit one model response go
                 // out as a single direct call (the single-stream token
                 // optimum); only oversized objectives pay for the manifest
                 // call and the parallel wave.
                 if crate::architect::fits_single_response(objective) {
-                    crate::architect::direct_response_plan(objective)
+                    options.source =
+                        PlanSource::Given(crate::architect::direct_response_plan(objective));
                 } else {
                     // Tighter default budget than the general planner: a
                     // greenfield build should be ~10 one-file workers, not 48.
@@ -489,12 +543,12 @@ impl RunManager {
                         .scheduler
                         .as_ref()
                         .and_then(|overrides| overrides.prompt_cache_key.clone());
-                    tokio::select! {
-                        _ = record.control.cancelled() => {
-                            record.set_state(RunStatus::Cancelled, Some("cancelled during planning".into()));
-                            return Ok(());
-                        }
-                        result = generate_manifest_plan_with_options(
+                    // A request that names a profile or plan options plans
+                    // through `plan_project` like the CLI, which also runs
+                    // the profile's `normalize_manifest`. Without them the
+                    // plan is built exactly as before.
+                    if request.profile.is_none() && request.plan_options.is_none() {
+                        let planning = generate_manifest_plan_with_options(
                             self.inner.client.as_ref(),
                             objective,
                             max_tasks,
@@ -503,14 +557,37 @@ impl RunManager {
                             // --architect-single-shot for the measurement).
                             true,
                             cache_key.as_deref(),
-                        ) => result?,
+                        );
+                        tokio::select! {
+                            _ = record.control.cancelled() => {
+                                cancelled();
+                                return Ok(());
+                            }
+                            result = planning => options.source = PlanSource::Given(result?),
+                        }
+                    } else {
+                        options.profile = match &request.profile {
+                            Some(name) => Some(
+                                Profile::named(name)
+                                    .with_context(|| format!("unknown profile {name:?}"))?,
+                            ),
+                            None => None,
+                        };
+                        options.max_tasks = max_tasks;
+                        options.steering = request.steering.clone();
+                        options.architect = ArchitectOptions {
+                            force_split: true,
+                            cache_key,
+                            ..ArchitectOptions::default()
+                        };
+                        options.plan = request.plan_options.unwrap_or_default();
                     }
                 }
             } else {
                 let max_tasks = request.max_tasks.unwrap_or(48);
                 tokio::select! {
                     _ = record.control.cancelled() => {
-                        record.set_state(RunStatus::Cancelled, Some("cancelled during planning".into()));
+                        cancelled();
                         return Ok(());
                     }
                     result = generate_plan_with_steering(
@@ -518,28 +595,11 @@ impl RunManager {
                         objective,
                         max_tasks,
                         &request.steering,
-                    ) => result?,
+                    ) => options.source = PlanSource::Given(result?),
                 }
             }
-        };
-        debug!(run_id = %record.id, tasks = plan.tasks.len(), "plan candidate created");
-
-        if record.control.is_cancelled() {
-            record.set_state(
-                RunStatus::Cancelled,
-                Some("cancelled before execution".into()),
-            );
-            return Ok(());
-        }
-        plan.validate()?;
-        *record.plan.write().expect("plan lock") = Some(plan.clone());
-        save_json(&record.output_dir.join("plan.json"), &plan).await?;
-        if request.plan_only {
-            record.set_state(RunStatus::PlanReady, None);
-            return Ok(());
         }
 
-        record.set_state(RunStatus::Running, None);
         let mut config = config;
         // Every run of this manager shares one provider, so they share its
         // rate and in-flight budgets.
@@ -550,13 +610,25 @@ impl RunManager {
             config.trace_path = Some(record.output_dir.join("trace.jsonl"));
         }
         config.journal_path = Some(record.output_dir.join("journal.jsonl"));
-        let report = execute_plan_with_control(
-            &plan,
-            Arc::clone(&self.inner.client),
-            config,
-            record.control.clone(),
-        )
-        .await?;
+        options.scheduler = config;
+        let mut hooks = ManagerHooks {
+            record: &record,
+            plan_only: request.plan_only,
+        };
+        options.hooks = Some(&mut hooks);
+        let objective = request.objective.as_deref().unwrap_or_default();
+        let outcome = match build(objective, Arc::clone(&self.inner.client), options).await {
+            Ok(outcome) => outcome,
+            Err(error) if error.downcast_ref::<Cancelled>().is_some() => {
+                cancelled();
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
+        // The hooks stopped after planning (cancelled, plan only).
+        let Some(report) = outcome.report else {
+            return Ok(());
+        };
         save_json(&record.output_dir.join("report.json"), &report).await?;
         *record.report.write().expect("report lock") = Some(report.clone());
         if report.is_success() {
@@ -698,6 +770,43 @@ impl RunManager {
     }
 }
 
+/// What `RunManager::execute` does after planning: record the plan, save
+/// `plan.json`, and stop for a cancelled run or a plan-only request.
+struct ManagerHooks<'a> {
+    record: &'a Arc<RunRecord>,
+    plan_only: bool,
+}
+
+#[crate::async_trait]
+impl BuildHooks for ManagerHooks<'_> {
+    async fn planned(
+        &mut self,
+        _: Option<&crate::architect::Manifest>,
+        plan: &mut Plan,
+        _: &mut SchedulerConfig,
+        _: u64,
+    ) -> Result<bool> {
+        let record = self.record;
+        debug!(run_id = %record.id, tasks = plan.tasks.len(), "plan candidate created");
+        if record.control.is_cancelled() {
+            record.set_state(
+                RunStatus::Cancelled,
+                Some("cancelled before execution".into()),
+            );
+            return Ok(false);
+        }
+        plan.validate()?;
+        *record.plan.write().expect("plan lock") = Some(plan.clone());
+        save_json(&record.output_dir.join("plan.json"), &*plan).await?;
+        if self.plan_only {
+            record.set_state(RunStatus::PlanReady, None);
+            return Ok(false);
+        }
+        record.set_state(RunStatus::Running, None);
+        Ok(true)
+    }
+}
+
 async fn save_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(value).context("failed to serialize JSON")?;
     tokio::fs::write(path, bytes)
@@ -717,6 +826,7 @@ fn new_run_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::architect::plan_project;
     use crate::client::MockClient;
     use crate::dag::Task;
 
@@ -736,6 +846,7 @@ mod tests {
                 static_output: None,
                 reasoning_effort: None,
                 internal: false,
+                prefix_split: None,
             }],
         }
     }
@@ -774,6 +885,215 @@ mod tests {
             .join("report.json")
             .exists());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Answers every export fragment with the files it lists, one export
+    /// each, so architect planning runs without a model. Refuses the
+    /// single-shot manifest prompt, so a path that drops `force_split` fails.
+    struct FragmentEcho;
+
+    #[async_trait::async_trait]
+    impl ModelClient for FragmentEcho {
+        async fn complete(
+            &self,
+            request: crate::client::CompletionRequest,
+        ) -> Result<crate::client::Completion> {
+            if request
+                .user
+                .contains("Design the file manifest for this objective")
+            {
+                bail!("FragmentEcho answers export fragments only");
+            }
+            let files: Vec<serde_json::Value> = request
+                .user
+                .lines()
+                .filter_map(|line| line.strip_prefix("- `"))
+                .filter_map(|rest| rest.split_once("`: "))
+                .map(|(path, purpose)| {
+                    let name = path.trim_end_matches(".py").replace('/', "_");
+                    serde_json::json!({
+                        "path": path,
+                        "purpose": purpose,
+                        "exports": [format!("def {name}() -> int")],
+                    })
+                })
+                .collect();
+            let text = serde_json::json!({"files": files, "test_files": [], "readme": false});
+            Ok(crate::client::Completion {
+                text: text.to_string(),
+                provider: None,
+                input_tokens: 10,
+                output_tokens: 10,
+                reasoning_tokens: None,
+                cached_input_tokens: None,
+                finish_reason: Some("stop".to_string()),
+                usage_is_estimated: true,
+                elapsed: Duration::ZERO,
+                time_to_first_token: None,
+            })
+        }
+    }
+
+    /// Lists its modules (skeleton from the objective) and asks for enough
+    /// tests to take the wave rather than one direct call.
+    const LISTED_OBJECTIVE: &str = "Build a ledger. Modules: (1) ledger.py - core money \
+        math for every entry; (2) store.py - JSON storage of all records; (3) cli.py - \
+        argparse front end wiring everything. Include a pytest suite of at least 90 tests.";
+
+    async fn planned(manager: &RunManager, request: RunRequest) -> Plan {
+        let submitted = manager.submit(request).await.unwrap();
+        for _ in 0..200 {
+            if manager
+                .get(&submitted.id)
+                .unwrap()
+                .summary
+                .status
+                .is_terminal()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let details = manager.get(&submitted.id).unwrap();
+        assert_eq!(details.summary.status, RunStatus::PlanReady);
+        manager.plan(&submitted.id).expect("plan ready")
+    }
+
+    #[tokio::test]
+    async fn manager_and_cli_paths_give_the_same_plan() {
+        let root = std::env::temp_dir().join(format!("slimtoken-manager-{}", new_run_id()));
+        let manager = RunManager::new(
+            Arc::new(FragmentEcho),
+            SchedulerConfig::default(),
+            root.clone(),
+            false,
+        );
+        let options = PlanOptions {
+            density: true,
+            ..PlanOptions::default()
+        };
+        let from_manager = planned(
+            &manager,
+            RunRequest {
+                objective: Some(LISTED_OBJECTIVE.into()),
+                architect: true,
+                plan_only: true,
+                profile: Some("python".into()),
+                plan_options: Some(options),
+                ..RunRequest::default()
+            },
+        )
+        .await;
+
+        // The CLI path: plan_project with the same profile and options, and
+        // the CLI's `--manifest` replay of the manifest it returns.
+        let python = Profile::named("python");
+        let (manifest, from_engine) = plan_project(
+            &FragmentEcho,
+            LISTED_OBJECTIVE,
+            12,
+            &[],
+            &ArchitectOptions::default(),
+            &options,
+            python,
+        )
+        .await
+        .unwrap();
+        let replayed =
+            crate::architect::plan_from_manifest(LISTED_OBJECTIVE, &manifest, 12, python, &options)
+                .unwrap();
+        let json = |plan: &Plan| serde_json::to_string(plan).unwrap();
+        assert_eq!(json(&from_manager), json(&from_engine));
+        assert_eq!(json(&from_manager), json(&replayed));
+        assert_eq!(manifest.files.len(), 3);
+
+        // No profile and no options: the plan is built as before.
+        let legacy = planned(
+            &manager,
+            RunRequest {
+                objective: Some(LISTED_OBJECTIVE.into()),
+                architect: true,
+                plan_only: true,
+                ..RunRequest::default()
+            },
+        )
+        .await;
+        let before = generate_manifest_plan_with_options(
+            &FragmentEcho,
+            LISTED_OBJECTIVE,
+            12,
+            &[],
+            true,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(json(&legacy), json(&before));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn plan_options_deserialize_with_defaults() {
+        let request: RunRequest = serde_json::from_str(
+            r#"{"objective":"x","architect":true,"profile":"nextjs","plan_options":{"density":true}}"#,
+        )
+        .unwrap();
+        let options = request.plan_options.unwrap();
+        assert!(options.density);
+        assert_eq!(
+            options,
+            PlanOptions {
+                density: true,
+                ..PlanOptions::default()
+            }
+        );
+        request.validate().unwrap();
+        let unknown = RunRequest {
+            objective: Some("x".into()),
+            architect: true,
+            profile: Some("cobol".into()),
+            ..RunRequest::default()
+        };
+        assert!(unknown.validate().is_err());
+        let not_architect = RunRequest {
+            architect: false,
+            ..request.clone()
+        };
+        assert!(not_architect.validate().is_err());
+        let huge_quota = RunRequest {
+            plan_options: Some(PlanOptions {
+                quota_pct: u64::MAX,
+                ..PlanOptions::default()
+            }),
+            ..request.clone()
+        };
+        assert!(huge_quota.validate().is_err());
+        let many_shards = RunRequest {
+            plan_options: Some(PlanOptions {
+                min_test_shards: 10_000,
+                ..PlanOptions::default()
+            }),
+            ..request.clone()
+        };
+        assert!(many_shards.validate().is_err());
+        for (date, valid) in [
+            ((2026, 11, 14), true),
+            ((2026, 13, 1), false),
+            ((2026, 0, 1), false),
+            ((2026, 1, 32), false),
+            ((2026, 1, 0), false),
+            ((0, 1, 1), false),
+            ((10_000, 1, 1), false),
+        ] {
+            let dated = RunRequest {
+                plan_options: Some(PlanOptions {
+                    today: Some(date),
+                    ..PlanOptions::default()
+                }),
+                ..request.clone()
+            };
+            assert_eq!(dated.validate().is_ok(), valid, "{date:?}");
+        }
     }
 
     #[test]

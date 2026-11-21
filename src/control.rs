@@ -1,10 +1,11 @@
 use crate::dag::Plan;
+use crate::scheduler::TaskRecord;
 use anyhow::{bail, Result};
 use serde::Serialize;
 use std::collections::BTreeMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 const MAX_STEERING_DIRECTIVES: usize = 32;
 const MAX_STEERING_CHARS: usize = 8_000;
@@ -49,6 +50,9 @@ struct ControlInner {
     cancel_rx: watch::Receiver<bool>,
     steering: RwLock<Vec<String>>,
     tasks: RwLock<BTreeMap<String, TaskProgress>>,
+    /// The listener of [`RunControl::subscribe_landings`]; `None`: no task
+    /// record is copied.
+    landings: Mutex<Option<mpsc::UnboundedSender<TaskRecord>>>,
 }
 
 /// Shared control plane used by the scheduler, interactive CLI, and REST API.
@@ -73,6 +77,7 @@ impl RunControl {
                 cancel_rx,
                 steering: RwLock::new(steering),
                 tasks: RwLock::new(BTreeMap::new()),
+                landings: Mutex::new(None),
             }),
         })
     }
@@ -137,6 +142,35 @@ impl RunControl {
 
     pub fn task_finished(&self, id: &str, status: TaskProgressStatus, attempts: u32) {
         self.update_task(id, status, attempts);
+    }
+
+    /// A copy of each task record that succeeds from now on, as the
+    /// scheduler records it (`crate::inwave` checks files while the wave
+    /// still runs). One listener at a time: a new call replaces the one
+    /// before. Without a listener nothing is copied.
+    pub fn subscribe_landings(&self) -> mpsc::UnboundedReceiver<TaskRecord> {
+        let (send, receive) = mpsc::unbounded_channel();
+        if let Ok(mut slot) = self.inner.landings.lock() {
+            *slot = Some(send);
+        }
+        receive
+    }
+
+    /// Stop the copies of [`Self::subscribe_landings`].
+    pub fn unsubscribe_landings(&self) {
+        if let Ok(mut slot) = self.inner.landings.lock() {
+            *slot = None;
+        }
+    }
+
+    /// The scheduler recorded `record` as succeeded: copy it to the
+    /// listener, if there is one.
+    pub fn task_landed(&self, record: &TaskRecord) {
+        if let Ok(slot) = self.inner.landings.lock() {
+            if let Some(send) = slot.as_ref() {
+                let _ = send.send(record.clone());
+            }
+        }
     }
 
     fn update_task(&self, id: &str, status: TaskProgressStatus, attempts: u32) {

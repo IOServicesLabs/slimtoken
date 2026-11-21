@@ -163,6 +163,7 @@ pub fn mock_plan(objective: &str) -> Plan {
         static_output: None,
         reasoning_effort: None,
         internal: false,
+        prefix_split: None,
     };
 
     Plan {

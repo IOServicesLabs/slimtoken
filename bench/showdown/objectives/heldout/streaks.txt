@@ -1,0 +1,13 @@
+Build "Streaks", a complete habit tracking web app with Next.js (App Router) and TypeScript. No backend: all data lives in local storage, with realistic seed data on first load. No UI or chart libraries: plain React, one global stylesheet, charts drawn with inline SVG.
+
+Pages:
+- Today: the habits due today with a check-off control, today's completion percentage, and current streaks.
+- Habits: list of habits with their schedule (daily, specific weekdays, or N times per week); create, edit, pause, delete.
+- Habit detail: a year heatmap of completions, current and longest streak, completion rate, and a notes log.
+- Journal: a daily mood (1-5) and a short note, with a list of past entries and a mood-over-time chart.
+- Stats: completion rate per habit for the last 4 weeks, a weekday breakdown chart, and the best and worst habits.
+- Settings: first day of the week, reminder time display, theme (light, dark), export all data as JSON, and reset demo data.
+
+Put all domain logic in pure lib modules: habits, schedules, completions, streaks, heatmap grid, journal, stats, export, storage, seed data, date helpers and id generation. Include Vitest tests for the lib modules and a README.
+
+Quality bar: every page is complete and usable, with real controls wired to the lib modules. No stubs, no placeholders, no TODO comments, and no import of a file that you do not write. The project must pass `npm install`, `npm run build` (type check included) and `npm test`.

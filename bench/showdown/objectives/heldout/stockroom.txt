@@ -1,0 +1,15 @@
+Build "StockRoom", a complete inventory management web app for a small shop with Next.js (App Router) and TypeScript. No backend: all data lives in local storage, with realistic seed data on first load. No UI or chart libraries: plain React, one global stylesheet, charts drawn with inline SVG.
+
+Pages:
+- Overview: total stock value, items below their reorder level, a stock value by category chart and recent stock movements.
+- Products: list of products with SKU, category, quantity and price; sort and filter; create, edit, discontinue.
+- Product detail: stock movement history (received, sold, adjusted) with a running quantity, and a quantity-over-time chart.
+- Suppliers: list of suppliers with contact details and the products they supply; create and edit.
+- Purchase orders: create an order for a supplier with line items, mark it received (which adds the stock), cancel.
+- Stock count: enter counted quantities for a category and apply the differences as adjustments.
+- Reports: sales per month, top products, and CSV export of the inventory.
+- Settings: currency, default reorder level, theme (light, dark), and reset demo data.
+
+Put all domain logic in pure lib modules: products, stock movements, suppliers, purchase orders, stock counts, valuation, reorder alerts, reports, CSV export, storage, seed data, money formatting, date helpers and id generation. Include Vitest tests for the lib modules and a README.
+
+Quality bar: every page is complete and usable, with real controls wired to the lib modules. No stubs, no placeholders, no TODO comments, and no import of a file that you do not write. The project must pass `npm install`, `npm run build` (type check included) and `npm test`.

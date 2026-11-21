@@ -2,7 +2,7 @@
 //! crate. Toolchain config (Cargo.toml) is rendered, not generated, so
 //! `cargo test` runs offline with no external crates.
 
-use super::{keep, Profile};
+use super::{keep, Profile, NO_REPAIR_HOOKS, NO_STAGING};
 
 pub static RUST: Profile = Profile {
     name: "rust",
@@ -73,10 +73,13 @@ pub static RUST: Profile = Profile {
     scaffold,
     normalize_skeleton: keep,
     normalize_manifest: keep,
+    tidy_manifest: keep,
     readme_sections: |_| {
-        "\n## Run\n\n```\ncargo run -- <args>\n```\n\n## Tests\n\n```\ncargo test\n```\n"
+        "\n## Run\n\n~~~bash\ncargo run -- <args>\n~~~\n\n## Tests\n\n~~~bash\ncargo test\n~~~\n"
             .to_string()
     },
+    staging: NO_STAGING,
+    repair: NO_REPAIR_HOOKS,
 };
 
 /// The shared edge rule in Rust comment syntax.

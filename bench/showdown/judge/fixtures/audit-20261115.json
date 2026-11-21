@@ -1,0 +1,515 @@
+{
+ "sample": "partly in-sample: the judge's prompts and lints were first written while this audit was read (an earlier worked example came from its p1 X app, since replaced by a neutral one), and the smoke flow locators were tuned on its apps; not a held-out test",
+ "source": "blind app-quality audit of 2026-11-15: 5 pairs x 2 lenses (coverage, working), one Claude agent per judgment with Read/Grep; X/Y are the audit's blind labels",
+ "apps": "slimtoken-out-showdown/<run>/<arm> (or --apps DIR with DIR/<pair>/<label>)",
+ "pairs": [
+  {
+   "pair": "p1",
+   "run": "20261115-083407",
+   "objective": "taskflow",
+   "provider": "deepseek",
+   "X": "slimtoken",
+   "Y": "single",
+   "audit": {
+    "coverage": {
+     "better": "Y",
+     "margin": "large",
+     "X": {
+      "score": 55,
+      "full": 21,
+      "partial": 10,
+      "missing": 3,
+      "broken": 2,
+      "wrong": 2,
+      "cosmetic": 3
+     },
+     "Y": {
+      "score": 91,
+      "full": 36,
+      "partial": 3,
+      "missing": 0,
+      "broken": 0,
+      "wrong": 1,
+      "cosmetic": 3
+     }
+    },
+    "working": {
+     "better": "Y",
+     "margin": "large",
+     "X": {
+      "score": 42,
+      "full": 4,
+      "partial": 4,
+      "missing": 1,
+      "broken": 4,
+      "wrong": 5,
+      "cosmetic": 5
+     },
+     "Y": {
+      "score": 84,
+      "full": 9,
+      "partial": 0,
+      "missing": 0,
+      "broken": 0,
+      "wrong": 3,
+      "cosmetic": 3
+     }
+    }
+   },
+   "problems": {
+    "X": [
+     "Task detail labels cannot be edited: app/task/page.tsx:108 passes labels={[]} to TaskForm, so the label toggle list in components/TaskForm.tsx:117 always renders empty. The seed labels (lib/seed.ts:26-32) are never put into AppState (lib/storage.ts:6-12), and labels are not shown on the task view either. The 'labels' requirement on Task detail is missing in the UI, and lib/labels.ts createLabel/assignLabel are never called from the app.",
+     "Team workload is wrong: lib/team.ts:33 checks task.status === \"Done\", but statuses are lowercase \"done\" (lib/types.ts:8). Completed tasks are counted as open, so the 'open tasks per member' figure on /team is inflated.",
+     "Calendar is not a real month grid: components/CalendarGrid.tsx:29 lays out the weekday headers and 42 day cells with class card-grid, which is repeat(auto-fit, minmax(200px,1fr)) (app/styles/part2.css:1-3). The days flow into 4-6 columns instead of 7, so dates do not line up under weekdays. Prev/next and placing tasks on due dates work (app/calendar/page.tsx:57-73).",
+     "The board has no project selector: app/board/page.tsx:24-28 picks the ?project= param or projects[0], but nothing in the UI sets that param. ProjectList has no Board link (components/ProjectList.tsx), so the board only ever shows the first project.",
+     "The default project setting is saved but never read. defaultProjectId is used only in app/settings/page.tsx and components/SettingsForm.tsx, and the board ignores it (app/board/page.tsx:24-28).",
+     "There is no way to create a task anywhere in the UI. No createTask exists in lib/tasks.ts (it has only filterTasks), so the 'tasks' lib module is mostly a filter.",
+     "Board moves are limited to left/right arrow buttons to the adjacent column (components/KanbanBoard.tsx:53-70), with no drag and drop. This still meets 'move tasks between columns'.",
+     "README.md is the generator's file spec, not a user README: the title is '# Project', line 3 is a truncated sentence, lines 42-56 are generator instructions ('Write each record as one compact object literal…'), and the '## Run' section (line 58) is empty.",
+     "'One global stylesheet' is split into three imported files (app/globals.css:1-3 imports app/styles/part1-3.css).",
+     "The archive action has no lib function (an inline map in app/projects/page.tsx:58-63), and archived projects cannot be seen or restored.",
+     "Search results for comments show the raw taskId as the title (lib/search.ts:66) and are not links. No search result navigates anywhere (components/SearchResults.tsx).",
+     "The recent activity feed is derived from timestamps (app/page.tsx:22-50), not from real user actions, and it shows raw ISO strings (components/ActivityFeed.tsx:13).",
+     "lib/storage.ts has no test.",
+     "BROKEN app/task/page.tsx:108 passes labels={[]} to TaskForm, and storage AppState (lib/storage.ts:6-12) has no labels field, so the label editor has no buttons. Labels cannot be edited and are never shown on the task page, although the prompt requires label editing.",
+     "BROKEN app/board/page.tsx:24-28 picks the project only from ?project= or falls back to the first active project. The board has no project picker and nothing links to /board?project= (components/ProjectList.tsx has no board link), so only one project's board can be reached.",
+     "BROKEN Settings 'Default project' (app/settings/page.tsx:32-36) is saved but nothing reads settings.defaultProjectId. The board ignores it, so the control does nothing.",
+     "BROKEN (missing) There is no way to create a task anywhere in the app. A project created on the Projects page stays at 0 tasks and 0% with an empty board forever.",
+     "WRONG lib/team.ts:33 checks task.status === \"Done\" but the status values are lowercase \"done\". Completed tasks are counted as open, so Team workload is inflated (Ava shows 3 open instead of 2, Cara 3 instead of 2, Ben 3 instead of 2).",
+     "WRONG app/page.tsx:39 builds comment activity from task.comments, which is always [] in the seed and never written to (new comments go to state.comments at app/task/page.tsx:79-86). The Recent activity feed never shows comments.",
+     "WRONG components/CalendarGrid.tsx:29 lays out the month in .card-grid (part2.css:3, repeat(auto-fit,minmax(200px,1fr))) instead of a 7-column grid. Weekday headers and day cells don't line up as a month view, and in-month and out-of-month days are styled the same (line 37 uses the same class for both branches).",
+     "WRONG lib/seed.ts:34-53 hard-codes every date around 2026-11-15. The demo data goes stale: after a few weeks every task is overdue and the burndown, velocity and 'completed this week' figures fall to zero.",
+     "WRONG lib/search.ts:66 sets a comment result's title to the raw taskId (e.g. 't2'), and components/SearchResults.tsx renders results as plain text with no link to the task or project.",
+     "COSMETIC The Calendar page (app/calendar/page.tsx:74-89) shows every task twice: once in the grid and again in a second card list under it. Calendar tasks are not clickable.",
+     "COSMETIC Activity timestamps and comment times are raw ISO strings (components/ActivityFeed.tsx:13, components/CommentList.tsx:25).",
+     "COSMETIC The CSV export writes label ids ('l2;l4') and assignee ids rather than names (lib/csv.ts:35-36).",
+     "COSMETIC app/layout.tsx:1 makes the root layout a client component with no metadata, so no page title is set. Pages nest .page inside main.page, which doubles the padding.",
+     "README.md is the generator's file spec rather than a README: it has no feature description and an empty '## Run' section (line 58)."
+    ],
+    "Y": [
+     "lib/storage.ts and lib/seed.ts have no Vitest file; every other lib module has a *.test.ts beside it.",
+     "Task detail patches the title on every keystroke with no empty check (app/tasks/[id]/page.tsx:71), so a task can be saved with an empty title.",
+     "Seed activity entries are not in chronological order (lib/seed.ts:341-347: a_5 is older than a_1-a_4 but listed last), so the 'Recent activity' feed order is slightly off until new actions are pushed.",
+     "The layout hard-codes data-theme=\"light\" (app/layout.tsx:13), and the dark theme is applied only after the store loads (lib/store.tsx:55-59). This causes a brief light flash for dark users.",
+     "The board's project selector also lists archived projects (app/board/page.tsx:64-69). This is minor.",
+     "lib/board.ts reorderWithinColumn and lib/labels.ts allLabels are never used by the UI; this is harmless extra code.",
+     "WRONG lib/burndown.ts:19-22 ignores createdAt, so a task created today counts as 'remaining' on all 14 earlier days. The burndown is flattened or inflated after quick-adding tasks.",
+     "WRONG app/board/page.tsx:18-19 reads ?project= only into the initial useState. Following a link to /board?project=X while already on /board (for example from a Search project result) does not switch the board.",
+     "WRONG lib/cycleTime.ts:14 counts only tasks that have startedAt. A task moved straight from Backlog to Done (lib/board.ts:14 sets startedAt only on in_progress) is left out of the cycle time stats. Days are whole-day rounded, so a task finished the same day shows 0d.",
+     "COSMETIC app/tasks/[id]/page.tsx:71 patches the title on every keystroke with no validation, so a task can be saved with an empty title and appears blank on the board and calendar.",
+     "COSMETIC lib/store.tsx:128 builds the activity text as 'Moved X to in progress' with status.replace, which gives a lowercase label inconsistent with the column names.",
+     "COSMETIC app/board/page.tsx:63 lists archived projects in the board picker (marked '(archived)'), and the select value can drift from the project actually shown when the stored projectId is missing."
+    ]
+   }
+  },
+  {
+   "pair": "p2",
+   "run": "20261115-083658",
+   "objective": "ledgerly",
+   "provider": "deepseek",
+   "X": "single",
+   "Y": "slimtoken",
+   "audit": {
+    "coverage": {
+     "better": "X",
+     "margin": "large",
+     "Y": {
+      "score": 58,
+      "full": 24,
+      "partial": 12,
+      "missing": 2,
+      "broken": 1,
+      "wrong": 6,
+      "cosmetic": 3
+     },
+     "X": {
+      "score": 87,
+      "full": 36,
+      "partial": 3,
+      "missing": 0,
+      "broken": 0,
+      "wrong": 3,
+      "cosmetic": 2
+     }
+    },
+    "working": {
+     "better": "X",
+     "margin": "large",
+     "Y": {
+      "score": 48,
+      "full": 4,
+      "partial": 5,
+      "missing": 0,
+      "broken": 2,
+      "wrong": 7,
+      "cosmetic": 4
+     },
+     "X": {
+      "score": 80,
+      "full": 8,
+      "partial": 1,
+      "missing": 0,
+      "broken": 1,
+      "wrong": 5,
+      "cosmetic": 2
+     }
+    }
+   },
+   "problems": {
+    "Y": [
+     "Category IDs disagree: the UI catalog lib/categories.ts:8-17 maps cat-3 to Housing, cat-4 to Transport, cat-6 to Entertainment and cat-8 to Other Income, while lib/seed.ts:6-13 (seedCategories, used only by tests) and the seed records use cat-3 for Transport, cat-4 for Housing and cat-6 for Shopping. Seeded rent shows as 'Transport' and Metro Transit as 'Housing' on the Overview, Transactions, Budgets, Recurring and Reports pages",
+     "The 'first day of the month for budgets' setting does nothing: computeProgress checks firstDay but never uses it (lib/budgets.ts:78-81), and spending is matched by calendar month (lib/budgets.ts:33-48)",
+     "The Sort buttons on the Transactions page (app/transactions/page.tsx:194-204) do nothing, because TransactionTable re-sorts with its own internal state (components/TransactionTable.tsx:30-47)",
+     "The transaction table always formats amounts as USD (components/TransactionTable.tsx:90) and ignores the currency setting",
+     "The transaction detail page can only be reached from the 5 latest rows on the Overview (app/page.tsx:138). The Transactions table has no link to it (components/TransactionTable.tsx:84-87)",
+     "Reports show only one month at a time as stat tiles and a table (app/reports/page.tsx:18-19,52-98). There is no multi-month view of spending by category per month and no income-vs-expenses trend or chart",
+     "Budget spending ignores splits: the page maps transactions to t.categoryId only (app/budgets/page.tsx:25-29)",
+     "The seed is hard-coded to dates around 2026-11-15, including December transactions in the future (lib/seed.ts:28-51). Only about 3 of the 12 months in the cash-flow chart have data, and the Overview 'latest' list shows future items first",
+     "The README (README.md:1-48) is the generator's file specification, with internal instructions such as 'so the file stays under 120 lines' and the part1-4 CSS rules, rather than a user README",
+     "The tests are 6 files (tests/01-06) and skip money, budgets/rollover, goals, filters, reports, accounts, dates and storage",
+     "The prompt asks for one global stylesheet, but app/globals.css imports 4 part files",
+     "lib/state.ts reduce() and its Action types are used only by tests. CSV export writes raw ids for account and category (lib/csv.ts:3,17-19)",
+     "Closed accounts disappear from the list (app/accounts/page.tsx:47) and cannot be reopened",
+     "wrong: lib/categories.ts:8-17 against lib/seed.ts:6-13 and 28-51 - the UI reads the CATEGORIES catalog, but the seed was written against a different id-to-name mapping. Metro Transit, Shell and Uber (cat-3) show as 'Housing', rent (cat-4) shows as 'Transport', and Target, Amazon and Delta (cat-6) show as 'Entertainment'. The donut, budgets (e.g. the $1,900 rent budget labelled 'Transport'), reports and tables are all mislabelled.",
+     "broken: app/transactions/page.tsx:194-205 - the page-level Sort buttons change sortKey and sortDir, but components/TransactionTable.tsx:30-47 re-sorts with its own internal state, so those buttons have no visible effect. Only the header buttons inside the table work.",
+     "wrong: app/transactions/page.tsx:180-190 - the edit TransactionForm has no key. With an edit open on transaction A, clicking Edit on B keeps A's field state, and Save writes A's payee, amount and so on into B under B's id (TransactionForm.tsx:117), which silently corrupts data.",
+     "broken: lib/budgets.ts:74-101 - computeProgress takes firstDay but never uses it, so the Settings 'Budget month starts on' control has no effect anywhere.",
+     "wrong: app/budgets/page.tsx:25-29 - the transactions passed to budgets keep only categoryId, so splits are ignored and the whole $73.49 Target split is charged to one category.",
+     "wrong: lib/seed.ts:28-51, 57-62 - the seed uses hard-coded dates (2026-10-28 to 2026-12-05) and budgets only for 2026-11, not dates relative to today. The 12-month cash flow has 10 empty months. Future-dated transactions (Nov 18 to Dec 5) count in this month's totals, net worth and 'Latest transactions'. In any other month the budgets page is empty.",
+     "wrong: components/StateProvider.tsx:16 - useState(() => loadState()) runs during SSR (seed) and on the client (localStorage). Once the user changes anything, every full page load has a hydration mismatch (content and theme class), which React recovers from by client re-rendering, with console errors and a dev overlay.",
+     "wrong: components/TransactionTable.tsx:90 and components/CashFlowChart.tsx:53,75,85 - amounts are formatted with a hard-coded 'USD', so the currency setting is ignored on the Transactions table and the cash-flow axis.",
+     "wrong (partial feature): app/reports/page.tsx:15-98 - Reports shows a single month's category list and three income/expense numbers. There is no 'spending by category per month' breakdown and no income-vs-expenses trend.",
+     "partial: app/recurring/page.tsx - the page only lists items and marks them paid. There is no way to add or delete a recurring bill or income (the addRecurring and deleteRecurring actions in lib/types.ts and lib/state.ts are never used), and marking paid does not record a transaction.",
+     "cosmetic: app/styles/part1.css:17,49-51 with components/AppShell.tsx:29 - .theme-dark is set on a wrapper div while body uses the :root --bg, and there is no .app rule, so in dark mode the page background stays light behind dark cards.",
+     "cosmetic: app/accounts/page.tsx:47 - closed accounts disappear entirely and cannot be reopened. The goals page has no list of contributions and no way to remove one.",
+     "cosmetic: app/recurring/page.tsx:40 and app/transactions/[id]/page.tsx:41 - a <main className=\"page\"> is nested inside the AppShell's <main className=\"page\">, giving double padding and invalid nesting. Deleting a transaction asks for no confirmation.",
+     "README.md is a dump of the generator's file spec (\"Write each record as one compact object literal...\"), not user documentation."
+    ],
+    "X": [
+     "Settings 'first day of the month' is wired but computes the wrong window: lib/budgets.ts:81-87 monthBounds returns day N to the end of the same calendar month, so with a start day of 15 it drops days 1-14 and never wraps into the next month",
+     "Rollover only carries the previous month's leftover (lib/budgets.ts:62-67), not a running total across months. It meets the prompt but only at a basic level",
+     "lib/search.ts (searchTransactions) is never called. The search box uses inline logic in lib/transactions.ts:56-60 instead, so the search module is only partly used",
+     "Transfers seeded with categoryId null (lib/seed.ts:96-97) count as income and spending and appear as 'Uncategorized' in the Overview donut (app/page.tsx:28-36)",
+     "Seed puts current-month transactions on fixed days up to the 28th (lib/seed.ts:57-78), so part of 'this month' is dated in the future",
+     "Recurring 'Mark paid' (app/recurring/page.tsx:50-71) always pays the next due date on or after today. Overdue occurrences never appear and cannot be marked",
+     "broken: components/TransactionForm.tsx:207-209 - the split amount input is controlled as value={formatCentsPlain(s.amount)} and re-parsed on every keystroke. Typing '5' after '0.00' gives '0.005', which rounds to 1 cent ('0.01'). Typing more digits after '5.00' snaps back to '5.00', and backspace cannot delete. Entering a normal split such as 12.50 needs cursor tricks, so splitting from the form is close to unusable.",
+     "wrong: lib/budgets.ts:81-86 - monthBounds with a 'first day of month' setting only moves the start forward inside the same calendar month (e.g. 15th to 30th) and never runs into the next month. With start day 15, half of each budget period's spending is dropped.",
+     "wrong: lib/seed.ts:96-97 with lib/transactions.ts:123-133 - the checking-to-savings transfer pair (categoryId null) counts as $500 income and $500 spending this month, and shows as a $500 'Uncategorized' slice in the Overview donut.",
+     "wrong: lib/transactions.ts:82-85 - effectiveCategoryAmounts forces every split negative, so a split income transaction is counted as spending by category in the donut, budgets and reports.",
+     "wrong: lib/date.ts:59-67 with lib/recurring.ts:8-10 - nextDueDate keeps advancing from the already-clamped cursor, so a monthly bill on the 31st drifts to the 28th for good after February.",
+     "wrong: lib/recurring.ts:4-15 - the next due date is always on or after today, so unpaid overdue items are silently skipped (no overdue state). Recurring items cannot be edited, only paused or deleted.",
+     "cosmetic: components/BarChart.tsx:17 - the chart has a fixed pixel width (12 months x 70 = 840px), so it depends on CSS to fit narrow screens.",
+     "cosmetic: components/AppProvider.tsx:27-32 - data-theme is applied only after mount, so dark mode flashes light on every load."
+    ]
+   }
+  },
+  {
+   "pair": "p3",
+   "run": "20261115-083947",
+   "objective": "taskflow",
+   "provider": "deepseek",
+   "X": "slimtoken",
+   "Y": "single",
+   "audit": {
+    "coverage": {
+     "better": "Y",
+     "margin": "large",
+     "X": {
+      "score": 50,
+      "full": 13,
+      "partial": 13,
+      "missing": 2,
+      "broken": 4,
+      "wrong": 4,
+      "cosmetic": 3
+     },
+     "Y": {
+      "score": 86,
+      "full": 26,
+      "partial": 3,
+      "missing": 1,
+      "broken": 0,
+      "wrong": 2,
+      "cosmetic": 1
+     }
+    },
+    "working": {
+     "better": "Y",
+     "margin": "large",
+     "X": {
+      "score": 42,
+      "full": null,
+      "partial": null,
+      "missing": null,
+      "broken": 4,
+      "wrong": 6,
+      "cosmetic": 4
+     },
+     "Y": {
+      "score": 80,
+      "full": null,
+      "partial": null,
+      "missing": null,
+      "broken": 0,
+      "wrong": 3,
+      "cosmetic": 4
+     }
+    }
+   },
+   "problems": {
+    "X": [
+     "Search is broken: X/app/search/page.tsx:1-16 is a server component that calls loadStore(), which returns seedStore() on the server (lib/storage.ts:38). It only ever searches the seed data, and edits, new projects and new comments are never searchable. The ?q= param is printed but not used as the query.",
+     "Comments are split across two stores. Seed comments live in store.comments (lib/seed.ts:53-61) but every task has comments: [], and the task page reads and writes task.comments (app/tasks/[id]/page.tsx:87,199). Seed comments never appear on any task, and comments added by users never reach search (SearchView reads store.comments).",
+     "Team workload is wrong. lib/team.ts:31 checks status !== 'Done', but statuses are lowercase 'done' (lib/types.ts:6), so completed tasks count as open.",
+     "Reports reads localStorage directly during render (app/reports/page.tsx:71-83) and skips loadStore. On a first visit to /reports, before any page has saved the store, tasks are empty and the page shows 'No completed tasks' and exports an empty CSV. Calling setState during render also risks a hydration mismatch.",
+     "Reports does not use the lib modules. Velocity and cycle-time logic are re-implemented inside the page (app/reports/page.tsx:15-46) and again in the unused components/ReportsView.tsx. lib/metrics.ts velocity() and cycleTime() are never called from the UI. Velocity is drawn as CSS progress bars, not inline SVG.",
+     "Board moves never set completedAt. lib/board.ts:38-41 changes only status and order, so a task dragged to Done does not count toward 'completed this week', burndown, velocity or cycle time.",
+     "Board moves are drag-and-drop only (components/BoardView.tsx:70-92), with no keyboard or button fallback.",
+     "Default project is saved in Settings (components/SettingsForm.tsx:37-51) but nothing reads it. grep finds no consumer, so the Board ignores it.",
+     "Theme does not apply on save. AppShell reads the theme only when the pathname changes (components/AppShell.tsx:24-27), and .theme-dark is set on .app-shell rather than on body.",
+     "The task detail page duplicates its editor. TaskEditor (title, description, priority, due date, assignee, labels as free text, plus subtasks and comments) is rendered and then followed by a second Details card, a second Subtasks list and a second Comments list (app/tasks/[id]/page.tsx:104-200). Element ids such as task-priority and task-due are duplicated, and two incompatible label UIs exist (free text vs label-id toggles).",
+     "The Projects list shows 0/0 progress bars because the page never passes tasks to ProjectList (app/projects/page.tsx:90). The real progress appears in a separate card underneath.",
+     "Dead or unwired code: components/CalendarView.tsx, components/ReportsView.tsx, lib/store.ts reducer, createTask (no UI anywhere creates a task), listComments and createLabel are unused.",
+     "The recent activity feed is synthesized from createdAt and completedAt (app/page.tsx:24-42) and is not an activity log. It also prints raw ISO timestamps.",
+     "README is not a README. It repeats the generator's file-by-file spec, including instructions like 'Write each record as one compact object literal' (README.md:31), and the '## Run' section is empty.",
+     "BROKEN app/search/page.tsx:1-16: Search is a server component that calls loadStore() on the server, where window is undefined, so lib/storage.ts:38 always returns seedStore(). Search never sees anything the user created, renamed or commented; it only ever searches the demo data.",
+     "BROKEN components/TaskEditor.tsx:125: the first subtask list on the task page passes onDelete={() => undefined}, so its Delete buttons do nothing. The page also renders the subtasks a second time (app/tasks/[id]/page.tsx:190), and that second list does work.",
+     "WRONG data model split, comments: the seed comments live in store.comments (lib/seed.ts:53-61), but task detail shows task.comments, which is [] for every seeded task (app/tasks/[id]/page.tsx:199). Seeded comments never appear on their task. New comments go into task.comments (page.tsx:87), which search never reads (SearchView reads store.comments).",
+     "WRONG lib/team.ts:31: workload checks task.status !== 'Done', but statuses are lowercase 'done'. Every completed task counts as open, so the Team page overstates each member's workload.",
+     "WRONG components/TaskEditor.tsx:20-42: the editor copies the task into local state once and never re-syncs it. If you change priority, due date or assignee in the 'Details' card (which saves immediately) and then press the editor's Save, the stale values overwrite your change. The Labels text box shows raw label ids ('l1, l3'), and Save replaces labels with whatever text was typed, which no longer matches any label id, so the label toggles show nothing selected.",
+     "WRONG app/tasks/[id]/page.tsx:104-187: priority, due date and assignee each appear twice, with duplicate DOM ids (task-priority, task-due, task-assignee, comment-body), and comments are also rendered twice. Confusing, and the two copies get out of sync.",
+     "WRONG settings default project has no effect: defaultProjectId is never read outside Settings and storage (app/board/page.tsx:28-33 picks the ?project param or the first active project).",
+     "WRONG app/reports/page.tsx:71-83: localStorage is read with setState during render instead of in useEffect, so the server HTML and the client render differ (hydration mismatch). If storage is empty, as on a first visit straight to /reports, it shows 0 tasks and 'No completed tasks yet' because it never falls back to seed data. lib/metrics velocity/cycleTime are duplicated inline instead of used.",
+     "WRONG theme: components/AppShell.tsx:24-27 re-reads the theme only when the pathname changes, so saving Dark in Settings has no visible effect until you navigate away. The theme class sits on a wrapper div, not on body.",
+     "MISSING: no UI anywhere creates a task (lib/tasks.ts createTask is never imported). The board only moves tasks by HTML5 drag-and-drop (components/BoardView.tsx:70-92), with no button or keyboard alternative, so moving tasks does not work on touch devices.",
+     "COSMETIC app/calendar/page.tsx: out-of-month days are not styled differently, tasks are not links, and the header is '2026-11'. components/CalendarView.tsx, which does these better, is unused. Activity feed shows raw ISO timestamps (ActivityFeed.tsx:12). CSV exports the assignee id rather than the name (ReportsView/reports page csvText). README.md is the generator's file spec, not user documentation."
+    ],
+    "Y": [
+     "Board ignores the ?project= query param. Projects page and task breadcrumbs link to /board?project=ID (app/projects/page.tsx:144, app/tasks/[id]/page.tsx:78), but the board initializes from settings.defaultProjectId or the first active project (app/board/page.tsx:16-18), so these links open the wrong project.",
+     "The board has no drag. Tasks move with left and right arrow buttons, one column at a time (app/board/page.tsx:131-145). That meets 'move tasks between columns', and the README says so honestly ('drag-free move controls').",
+     "Labels are free-text tags with no label catalog or colors (app/tasks/[id]/page.tsx:178-216, lib/labels.ts). This works but is minimal.",
+     "No UI creates a task. createTask in lib/tasks.ts is unused by the app. The prompt does not explicitly list task creation, but it is an obvious gap for a PM app (X has the same gap).",
+     "Moving a task out of Done via moveTask clears completedAt, which is expected. updateTask on every title keystroke writes to localStorage with no debounce, which is minor.",
+     "WRONG app/board/page.tsx:16-18: the board ignores the ?project= query param. The Projects page 'Board' button (projects/page.tsx:144), the task breadcrumb (tasks/[id]/page.tsx:78) and project search results (search/page.tsx:43) all link to /board?project=ID, but the board always opens the default project. Initial state is useState, so it is not re-read on later visits either.",
+     "MISSING: no UI to create a task (lib/tasks.ts createTask is never used). Tasks can only be edited and moved, the same gap X has.",
+     "WRONG lib/burndown.ts:22-25: 'remaining' counts every not-yet-completed task on every day, including tasks created after that day, so the early part of the burndown is inflated once new tasks exist.",
+     "WRONG app/tasks/[id]/page.tsx:97-101: the title saves on every keystroke with no empty check, so clearing it leaves a task with an empty title (blank link on the board and calendar).",
+     "COSMETIC app/board/page.tsx:64-73: if the default project is archived, the select's value is not among its active-only options, so the dropdown and the board shown disagree.",
+     "COSMETIC app/reports/page.tsx:95-96: the table shows raw 'in_progress' and 'high' instead of the STATUS_LABELS and PRIORITY_LABELS the CSV uses.",
+     "COSMETIC Board uses arrow buttons only (no drag-and-drop), as the README says ('drag-free move controls')."
+    ]
+   }
+  },
+  {
+   "pair": "p4",
+   "run": "20261115-140841",
+   "objective": "taskflow",
+   "provider": "muse",
+   "X": "single",
+   "Y": "slimtoken",
+   "audit": {
+    "coverage": {
+     "better": "X",
+     "margin": "clear",
+     "Y": {
+      "score": 48,
+      "full": 14,
+      "partial": 12,
+      "missing": 3,
+      "broken": 4,
+      "wrong": 4,
+      "cosmetic": 3
+     },
+     "X": {
+      "score": 72,
+      "full": 22,
+      "partial": 8,
+      "missing": 1,
+      "broken": 0,
+      "wrong": 3,
+      "cosmetic": 2
+     }
+    },
+    "working": {
+     "better": "X",
+     "margin": "clear",
+     "Y": {
+      "score": 32,
+      "full": 4,
+      "partial": 6,
+      "missing": 1,
+      "broken": 6,
+      "wrong": 4,
+      "cosmetic": 5
+     },
+     "X": {
+      "score": 63,
+      "full": 7,
+      "partial": 4,
+      "missing": 0,
+      "broken": 2,
+      "wrong": 5,
+      "cosmetic": 4
+     }
+    }
+   },
+   "problems": {
+    "Y": [
+     "Seed data is not loaded on first load: buildSeedState/shouldSeed are called only from app/settings/page.tsx:44. A new user who opens the Dashboard, Board, Projects, Team, Calendar, Reports or Search sees empty pages until they visit Settings",
+     "Dark theme does nothing: the dark variables are defined only on the class .theme-dark (app/styles/part1.css:4), but nothing sets that class. layout.tsx:25 sets data-theme on <html>, settings/page.tsx:51 sets dataset.theme, and Nav.tsx:19 sets data-theme on the nav. On top of that, layout and settings save the theme under different keys (taskflow-theme vs taskflow-prefs)",
+     "The default project setting is saved (settings/page.tsx:55) but never read: the board defaults to 'All projects' (board/page.tsx:26)",
+     "Saving on the Projects page loses data: persist() at app/projects/page.tsx:37 writes only {projects, tasks}, which deletes members (Team page and the assignee filter go empty) and version. The board's persist (board/page.tsx:37) also drops version. After either, the next Settings visit sees shouldSeed() true (seed.ts:34) and silently reseeds, overwriting the user's edits",
+     "No unarchive and no way to view archived projects (projects/page.tsx:63-67)",
+     "Task creation is not possible in the UI: lib/tasks.ts create() and filt() are only used by tests",
+     "Search results are not links (search/page.tsx:61-65), so a found task, project or comment cannot be opened",
+     "Comments in task detail do not show author or date (tasks/[id]/page.tsx:110)",
+     "The calendar marks every unfinished task that has a due date as 'tip'/overdue (calendar/page.tsx:74), whether or not it is past due",
+     "The recent activity feed is derived from task createdAt/doneAt (page.tsx:87), not a real activity log",
+     "CSV export has only id, title and status (lib/csv.ts:27-29)",
+     "lib/labels.ts is not used by the UI; the Team page defines its own initials() instead of using the team lib; components/Charts.tsx, TaskCard.tsx and ProjectCard.tsx are dead code",
+     "The README is a generator file manifest with leaked build instructions (README.md:31-45, e.g. 'Write each record as one compact object literal...') and an empty '## Run' section at the end",
+     "The prompt asked for one global stylesheet; the styles are split into three files imported by globals.css",
+     "app/settings/page.tsx:44 is the only caller of shouldSeed/buildSeedState. On first load, Dashboard, Projects, Board, Calendar, Team, Reports and Search are all empty until the user happens to open Settings (broken: 'seed data on first load')",
+     "Dark theme never applies: the CSS defines .theme-dark (styles/part1.css:4) but the code only sets an html data-theme attribute (layout.tsx:25, settings/page.tsx:51,56). There are also two independent theme stores ('taskflow-theme' in the nav, 'taskflow-prefs' in settings) (broken)",
+     "app/projects/page.tsx:37 persist() writes {projects,tasks} only, so creating, renaming or archiving a project deletes members and the version field. After that, Team is empty and the assignee filter and dropdown are empty. On the next visit to Settings, shouldSeed (seed.ts:34) sees no version and overwrites all user data with the seed (broken, data loss)",
+     "lib/ids.ts:1-6 newId is an in-memory counter that resets on every page load. A new project gets id 'p-1', which collides with seed project p-1: it inherits that project's tasks and progress, and rename/archive hit both. Subtask and comment ids ('sub-1', 'c-1') also collide across reloads, so toggle/edit/delete act on several items (broken)",
+     "Progress bars never fill: CSS only styles '.bar>i' (styles/part2.css) but the markup uses <span> (projects/page.tsx:103) and <div> (tasks/[id]/page.tsx:96, team/page.tsx:58), so the bars are always empty (wrong)",
+     "No way to create a task anywhere in the UI; lib/tasks.ts create() is never imported by a page (missing)",
+     "Default project setting (settings/page.tsx:65-68) is saved but no page reads it; the board ignores it (broken)",
+     "app/tasks/[id]/page.tsx:92 Labels input has the same split/trim/filter/join bug: commas are eaten as you type, so you can't add a second label (broken)",
+     "app/page.tsx:69 every task completed more than 6 days ago is lumped into day 0 of the 7-day burndown, and 'Recent activity' (page.tsx:87-91) is just tasks sorted by date, not real events (wrong)",
+     "lib/tasks.ts:35 and page.tsx:64 overdue and 'completed this week' use UTC toISOString dates (wrong near midnight)",
+     "app/calendar/page.tsx:74 styles every unfinished task with a due date as overdue ('tip'), even when it's due in the future; there are no weekday headers on the Monday-start grid (cosmetic)",
+     "app/search/page.tsx:60-65 results don't link to tasks or projects, and the result 'kind' badge is run through the highlighter (cosmetic)",
+     "tasks/[id]/page.tsx:105-110 comments show the body only, with no author or date; projects can be archived but never unarchived or listed (cosmetic/partial)",
+     "README.md is a dump of the generator spec ('Write each record as one compact object literal...') with an empty Run section, so its claims say nothing about the app (cosmetic)",
+     "layout.tsx:28 + each page renders <main> inside <main>; NavLink active is always false (Nav.tsx:21) (cosmetic)"
+    ],
+    "X": [
+     "Recent activity feed never changes: only seed.ts:13 writes an activity entry ('Seeded demo data') and no action anywhere adds to db.activity, so app/page.tsx:25 always shows that one static line",
+     "Burndown 'actual' series is made up: lib/burndown.ts:2 spreads the current done count linearly over the days instead of using completion dates",
+     "Seed data is thin: lib/seed.ts has 2 projects, 3 members, 4 tasks and 1 comment, which is barely realistic",
+     "No drag-and-drop: tasks move between columns through a per-card status <select> (app/board/page.tsx:15). It works, but it is the simplest possible control",
+     "The quick-add task on the board builds the task inline with 't-'+Date.now() (app/board/page.tsx:13) instead of going through the tasks lib. lib/ids.ts nid() is never called, and lib/labels.ts (allLabels/addLabel) and lib/search.ts highlight() are not used by the UI (search/page.tsx:6 has its own Hi)",
+     "Velocity buckets are month plus 'W'+ceil(day/7) (lib/velocity.ts:2), not real ISO weeks, and weeks with nothing completed are left out",
+     "CSV export quotes fields with JSON.stringify (lib/csv.ts:2), which escapes quotes with \\\" instead of the CSV convention \"\"",
+     "Task status cannot be edited on the detail page (app/tasks/[id]/page.tsx); it can only be changed on the board",
+     "Tests are one shallow file, lib/lib.test.ts, with about one assertion per module; dates, storage and seed have no tests",
+     "The README is short but accurate. It claims 'Projects (CRUD...)' but there is no delete",
+     "lib/burndown.ts:2 burndown 'actual' line is made up: total - done*(i+1)/days is a straight line built from the current done count, not from completion dates. The dashboard chart looks real but doesn't track progress (wrong)",
+     "app/page.tsx:24 + lib/types.ts:9 Recent activity feed: nothing in the app ever appends to db.activity, so the feed always shows only the seeded 'Seeded demo data' line (broken)",
+     "app/tasks/[id]/page.tsx:18 Labels input is controlled through split/trim/filter/join, so a trailing comma (and a trailing space) is removed as you type. You can't type a second label or a multi-word label (broken)",
+     "lib/velocity.ts:2 'weeks' are month + ceil(dayOfMonth/7), not real weeks, and the buckets come out in insertion order instead of date order; reports/page.tsx:10 bar heights are count*20 with no scaling, so they overflow above 5 (wrong)",
+     "app/page.tsx:23 Status chart bar height v*15 is unscaled and overflows the 120px SVG once a column holds more than 7 tasks (cosmetic)",
+     "lib/csv.ts:2 quotes fields with JSON.stringify, so an embedded quote comes out as \\\" instead of \"\". The CSV is malformed for titles with quotes or backslashes, and description and project are left out (wrong)",
+     "lib/dates.ts:1-2 todayIso uses UTC toISOString, so overdue and due-today checks and new-task dates are off by one day near midnight in non-UTC zones (wrong)",
+     "lib/seed.ts:7-12 Seed is thin: 4 tasks, 1 done, 1 comment, all createdAt today. Burndown, velocity and cycle time have almost nothing to show on first load (wrong/weak)",
+     "app/search/page.tsx:12-13 Project and comment hits don't link anywhere, and a task matched only by its description shows the title with no highlight (cosmetic)",
+     "app/board/page.tsx:8,13 the board starts on the default project even when it is archived, while the select only lists unarchived projects, so the select and the shown tasks disagree (cosmetic)",
+     "app/tasks/[id]/page.tsx: no status field on task detail; the only way to change status is the board select (minor)"
+    ]
+   }
+  },
+  {
+   "pair": "p5",
+   "run": "20261115-141049",
+   "objective": "ledgerly",
+   "provider": "muse",
+   "X": "slimtoken",
+   "Y": "single",
+   "audit": {
+    "coverage": {
+     "better": "Y",
+     "margin": "large",
+     "X": {
+      "score": 38,
+      "full": 9,
+      "partial": 13,
+      "missing": 3,
+      "broken": 5,
+      "wrong": 5,
+      "cosmetic": 2
+     },
+     "Y": {
+      "score": 74,
+      "full": 21,
+      "partial": 7,
+      "missing": 0,
+      "broken": 0,
+      "wrong": 4,
+      "cosmetic": 2
+     }
+    },
+    "working": {
+     "better": "Y",
+     "margin": "clear",
+     "X": {
+      "score": 33,
+      "full": 3,
+      "partial": 4,
+      "missing": 2,
+      "broken": 5,
+      "wrong": 6,
+      "cosmetic": 2
+     },
+     "Y": {
+      "score": 64,
+      "full": 7,
+      "partial": 4,
+      "missing": 0,
+      "broken": 1,
+      "wrong": 4,
+      "cosmetic": 3
+     }
+    }
+   },
+   "problems": {
+    "X": [
+     "Transactions 'Add' links to /transactions/new (app/transactions/page.tsx:66), but there is no app/transactions/new route. It resolves to [id] with id='new' and shows 'Transaction not found' (app/transactions/[id]/page.tsx:93). Users cannot add a transaction. components/TransactionForm.tsx is written but never imported.",
+     "Dark theme is broken. setTheme sets document.documentElement.dataset.theme (lib/store.ts:92), but the CSS defines dark variables only on the .theme-dark class (app/styles/part1.css:11), so nothing changes. The layout also never applies the saved theme on load (app/layout.tsx).",
+     "Recurring is not persisted. Rules are rebuilt from seedRules() in useState on every mount (app/recurring/page.tsx:23). 'Mark paid' sets anchorDate to the current due date (line 39), and due() returns that anchor again because it is after yesterday (lib/recurring.ts:54), so the button does nothing visible. No transaction is recorded.",
+     "The first day of the month setting is saved (app/settings/page.tsx:28) but nothing reads it. Budgets use calendar months from getMonthRange (app/budgets/page.tsx:48), and Settings.monthStartDay in lib/types.ts is unused.",
+     "Reports show spending by category over all time only, not per month (app/reports/page.tsx:17). Currency is hard-coded to 'USD' (reports/page.tsx:15, recurring/page.tsx:77).",
+     "CSV export writes only id, date, payee and amountCents (lib/csv.ts:24). Category, account, notes and tags are missing.",
+     "Edits on the transaction detail page and the Accounts page call saveState directly and bypass the store cache (app/transactions/[id]/page.tsx:25, app/accounts/page.tsx:35). After router.push the cached state is stale until a full reload.",
+     "Seed data covers only accounts and transactions (lib/seed.ts:56). There are no budgets, goals or recurring items, so Budgets and Goals start empty. Seed categories such as 'Paycheck', 'Rent' and 'Fun' are not in defaultCategories (lib/categories.ts:11).",
+     "Reset demo data does not clear budgets (ledgerly-budgets) or goals (ledgerly-goals), which use separate keys (lib/store.ts:96).",
+     "The README is a leaked generator spec ('Write each record as one compact object literal... so the file stays under 120 lines', README.md:22). Its '## Run' section is empty.",
+     "Budget rollover is always applied and cannot be turned off per category (app/budgets/page.tsx:68). The lib getMonthlyBudget is unused.",
+     "The Overview 'donut' is drawn as a pie with wedges to the center (app/page.tsx:102). components/Charts.tsx has a real donut but is unused. Net worth includes closed accounts.",
+     "BROKEN: you can't add a transaction. app/transactions/page.tsx:66 links to /transactions/new, but there is no such route, so it falls into app/transactions/[id]/page.tsx:93 with id 'new' and shows 'Transaction not found'. components/TransactionForm.tsx is never imported anywhere.",
+     "BROKEN: dark theme never applies. lib/store.ts:92 sets document.documentElement.dataset.theme, but app/styles/part1.css:11 defines the dark variables on the class .theme-dark, which nothing ever adds. The theme is also not re-applied on reload (app/layout.tsx has no theme logic).",
+     "BROKEN: Recurring page is not persisted. app/recurring/page.tsx:23 rebuilds seedRules() on every mount, so added rules disappear after reload. Recurring items never become transactions.",
+     "BROKEN: 'Mark paid' does nothing visible. app/recurring/page.tsx:37-40 sets anchorDate to the current due date. due() (lines 28-36) then calls nextDueDate with after = yesterday, and lib/recurring.ts:54 returns the anchor unchanged, so the same date is shown again.",
+     "BROKEN: 'First day of the month' is saved (app/settings/page.tsx:24-29) but nothing reads monthStartDay. app/budgets/page.tsx:45-49 always uses calendar months.",
+     "WRONG: edits and deletes on the detail page look lost. app/transactions/[id]/page.tsx:24-27 calls saveState and router.push('/transactions'), but the module cache in lib/store.ts:26-35 is never updated, so the list shows the old values until a full reload.",
+     "WRONG: Accounts page persists with saveState directly (app/accounts/page.tsx:32-37) and bypasses the store's emit(). The shared cache goes stale, and a later setCurrency or setTheme in the same session (store.ts:84/93 emit {...cache}) would overwrite those account changes.",
+     "WRONG / MISSING: Reports has no spending-by-category-per-month view (app/reports/page.tsx:17 shows all-time totals only), and income vs expenses is plain numbers with no chart. Currency is hard-coded to 'USD' (line 15), and so is app/recurring/page.tsx:77 and the split header in [id]/page.tsx:69.",
+     "WRONG: the Overview donut and Reports ignore splits (app/page.tsx:35-40 uses t.category). Split transactions are counted under the parent category, while Budgets uses the splits.",
+     "WRONG: net worth sums closed accounts too (app/page.tsx:29), and the seed counts the 'Transfer' to savings as income (lib/seed.ts:37,52).",
+     "WRONG: Reset demo data (lib/store.ts:96-99) resets only accounts and transactions. Budgets, goals and settings in their own keys survive. There are no seeded budgets, goals or recurring items in storage.",
+     "Splits can't be cleared: removing all rows and saving throws 'split sum must equal total' (lib/transactions.ts:22).",
+     "Every page has a hydration mismatch. lib/store.ts:30-32 returns an empty state on the server, but the client's first render reads localStorage (e.g. Overview renders 'No transactions yet' on the server and data on the client).",
+     "README.md:1-43 is the generator's file spec ('Build Ledgerly...', 'Today is 2026-11-15...'), not a README for the user."
+    ],
+    "Y": [
+     "The quick-add form on Transactions takes only payee, amount and date. Account is fixed to the first account and category to 'Other' (app/transactions/page.tsx:25), so other fields must be set afterwards on the detail page.",
+     "Seed data is thin. There are only 5 transactions, all dated in the current month (lib/seed.ts:12-18), so the 12-month cash-flow chart and the per-month report are empty except for one month.",
+     "On the detail page the amount input is controlled with value=String(cents/100) and is re-parsed on every keystroke (app/transactions/[id]/page.tsx:18). Typing a decimal point gets dropped ('12.' becomes '12'), so cents are hard to type.",
+     "Recurring 'Add' always creates a monthly item in category 'Other' with today as next due date (app/recurring/page.tsx:12). There are no frequency, category or account controls, although lib supports weekly and yearly.",
+     "Goals 'Add' hard-codes targetDate '2027-12-31' (app/goals/page.tsx:13). It can be edited afterwards inline (line 17).",
+     "Rollover covers only the previous month's unspent amount, with no cumulative carry (app/budgets/page.tsx:15). monthRange uses toISOString on a local Date (lib/dates.ts:16), which can shift a day in timezones east of UTC.",
+     "Tests are one file with 5 tests. dates, ids, reports, storage and seed have no direct tests (tests/lib.test.ts).",
+     "BROKEN for cents: the Amount field on the detail page is controlled from cents (app/transactions/[id]/page.tsx:18, value=String(t.amountCents/100)). Typing '12.' is parsed and redrawn as '12', so you can't type a decimal amount. Clearing the field silently sets the amount to 0.",
+     "WRONG in timezones ahead of UTC: lib/dates.ts:14-17 (monthRange) builds local-midnight dates and formats them with toISOString. In UTC+ zones the budget/donut month starts on the previous month's last day and drops the month's own last day.",
+     "WRONG in UTC+ zones: lib/dates.ts:3-7 (addMonths) and 8-11 (addDays) use toISOString on local dates, so each 'Mark paid' (lib/recurring.ts:4-9) moves the next due date one extra day earlier.",
+     "WRONG / weak seed: lib/seed.ts:12-18 has only 5 transactions, all in the current month. 11 of the 12 cash-flow bars (app/page.tsx:35) and most Reports rows are empty. The prompt asked for realistic seed data.",
+     "Partial controls. Adding a transaction (app/transactions/page.tsx:25) always uses the first account and category 'Other' (you fix them on the detail page). Adding a recurring item (app/recurring/page.tsx:12) is always monthly, due today, category 'Other'. A new goal (app/goals/page.tsx:13) gets the target date 2027-12-31 until you edit it.",
+     "Cosmetic: when a month has only one spending category, the donut arc goes from a point back to the same point (app/page.tsx:19), so the chart draws nothing.",
+     "Cosmetic: renaming an account saves on every keystroke and allows an empty name (app/accounts/page.tsx:15). The first-day input can't be cleared (app/settings/page.tsx:7).",
+     "Income vs expenses in Reports is all-time only (lib/reports.ts:11-15). CSV export leaves out splits."
+    ]
+   }
+  }
+ ]
+}

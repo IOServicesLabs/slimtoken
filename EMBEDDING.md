@@ -61,6 +61,52 @@ let summary = manager
 scheduler overrides. See `API.md` for the full request shape and the REST
 routes.
 
+### One call from an objective to files on disk
+
+`pipeline::build` runs the steps that the CLI and `RunManager` run, in
+order: plan (`architect::plan_project_with`, or a plan you made:
+`PlanSource::Given`), the wave, write the project files
+(`BuildOptions::out_dir`), and, with `BuildOptions::checker`, check and
+repair them (`repair::check_and_repair_indexed`; the kept files are
+written again).
+
+```rust,no_run
+use std::sync::Arc;
+use slimtoken::pipeline::{build, BuildOptions};
+use slimtoken::profile::NEXTJS;
+use slimtoken::provider::DEEPSEEK_PRESET;
+
+async fn host(
+    client: Arc<dyn slimtoken::ModelClient>,
+    checker: &dyn slimtoken::check::Checker,
+) -> anyhow::Result<()> {
+    let options = BuildOptions {
+        out_dir: Some("app".into()),
+        checker: Some(checker),
+        ..BuildOptions::for_stack(&NEXTJS, Some(&DEEPSEEK_PRESET))
+    };
+    let outcome = build("Build a task tracker in Next.js", client, options).await?;
+    println!("{} files written", outcome.files.len());
+    Ok(())
+}
+```
+
+`BuildOptions::default()` plans and runs as the library always did.
+`BuildOptions::for_stack(profile, preset)` adds the preset's knobs and,
+only for a profile whose staging is measured (`staging.measured`), the
+staged wave, one owner for each type, the manifest passes, the test-shard
+floor, and `Sink::Assemble` when that plan is staged (the staging needs
+the DeepSeek preset; without it the sink stays `Sink::Model`). No
+built-in profile is measured yet. The sink is advice for the host:
+`build` makes no final document, so join the files yourself for
+`Sink::Assemble`, or append a sink task in `BuildHooks::planned` for
+`Sink::Model`.
+`BuildHooks` (`planned`, `executed`, `finished`, plus a `checker` or
+`index` made after planning) run your code between the steps: the CLI
+saves `plan.json` and appends its sink there, `RunManager` records the
+plan and stops a cancelled or plan-only run. A cancelled
+`BuildOptions::control` stops planning with `pipeline::Cancelled`.
+
 ## Embed from any language (the plugin path)
 
 A host that is not a Rust program embeds the engine over its REST API.
@@ -166,6 +212,77 @@ the CLI opts into the aggressive settings. The knobs a host usually sets:
 - `validator` — an artifact validator; rejections become repairs.
 - `trace_path` — a JSONL trace of wave events for host observability.
 
+`PlanOptions` shapes an architect plan (`architect::plan_from_manifest`,
+`plan_project_with`, `pipeline::BuildOptions::plan`). Its quality options,
+all off by default and not measured yet, use the profile's
+`staging.quality` texts (`profile::Quality`; NEXTJS has them, PYTHON and
+RUST use `NO_QUALITY`): `quality_rules` (fixed rules for the theme, the
+store, ids and settings at the end of the module head, and the dark-theme
+selector rewrite), `relative_dates` (seed dates computed at load, in place
+of `today`), `objective_pages` (each page gets its objective bullet, the
+quality bar and the route list; the head lists purposes) and
+`align_literals` (`architect::align_union_literals`, values only: compared,
+`case`, union members, lists of literals). The `objective` module has the
+text rules they use (`page_bullets`, `quality_bar_for_one_file`,
+`match_pages`, ...).
+
+The app contract (also off by default and not measured yet):
+`ArchitectOptions::contract` asks the planner for the profile's contract
+(`staging.quality.contract_rule`: shared unions with labels, catalogs with
+ids, the storage key, one whole-state type, the settings with defaults,
+meanings and readers, one owner per collection and UI control), checks the
+merged manifest with `contract::contract_problems` and asks each fragment
+that owns a problem once more (a repaired answer is kept only when no file
+loses exports and the check finds no more problems). On the plan side, `PlanOptions::contract`
+gives each settings reader its fields, `wiring_rules` extends the wiring
+prompt (`architect::wiring_prompt_with`), `consumers_see_css` makes pages
+and components wait for the CSS parts, and `deps_first` sets
+`Task::prefix_split` so `scheduler::render_task_prompt` puts the
+prerequisite outputs before each task's own tail (a longer shared prefix
+for prompt caching). Breaking: a host that builds `Task` values with struct
+literals adds `prefix_split: None` (or uses `..Default::default()`).
+
+Pages own their features (also off by default and not measured yet):
+`ArchitectOptions::page_local` adds the profile's `page_local_rule` to the
+planner rules, and `PlanOptions::page_local` runs
+`pagelocal::fold_page_components` as the last manifest pass. A component
+that exactly one page renders (or that no file names and whose name, id
+prop or purpose points to one page) leaves the manifest and goes into that
+page's purpose as local components (one worker writes the page and its
+private parts; with the option every page's task gets `max_tokens` 8192, and
+so does a page with the fold's note when a folded manifest is replayed with
+it off); components of a layout or of two or more pages, state owners and
+components that a lib module or a test needs stay, and each one left
+(holding no state, props not only ids) gets the profile's
+`shared_component_rule` (presentational: props in, callbacks out). With
+`objective_pages`, `pagelocal::page_lines` adds each page's shared
+components, the links that the routes imply and its create controls.
+`profile::Quality` has four new texts for it (`page_local_rule`,
+`local_note`, `shared_component_rule`, `layout_glob`; empty in
+`NO_QUALITY`).
+
+App conventions (also off by default and not measured yet; NEXTJS only):
+`ArchitectOptions::semantics` adds the profile's `semantics_rule` to the
+planner rules (the comments of `lib/types.ts` state once the money unit and
+sign, each date field's format, each status union's transition function and
+the timestamps it sets, the one state owner and the shell the layout
+renders; with `page_local` the page-local rule becomes
+`semantic_page_local_rule`, where only the store provider owns the state).
+The types fragment then sees every file (`semantics_types_note`, cap
+`semantics_cap`, +800 characters), and `semantics::semantic_problems`
+checks the merged manifest; its problems share the one repair round with
+`contract`. `PlanOptions::semantics` ends every module head with
+`semantics::conventions(manifest, profile)` (one block, the same for every
+worker, ending with `conventions_rule`) and gives each component that a
+layout renders `layout_component_rule` (`pagelocal::layout_component_lines`),
+or `layout_component_bare_rule` when the plan has no store provider.
+`profile::Quality` has seven new texts for it (`semantics_rule`,
+`semantic_page_local_rule`, `semantics_types_note`, `semantics_cap`,
+`conventions_rule`, `layout_component_rule`, `layout_component_bare_rule`;
+empty in `NO_QUALITY`), and
+`contract::{types_files, declared_fields, names, texts, stem}` are shared
+with the new module.
+
 Every new capability is opt-in. Defaults keep legacy behavior bit-for-bit.
 
 ## Telemetry
@@ -189,7 +306,8 @@ major version.
 
 | Event | When | Fields |
 |---|---|---|
-| `planning_complete` | First line, when the caller set `SchedulerConfig.planning` | `planning_ms`, `calls`, `input_tokens`, `output_tokens`, `cached_input_tokens` |
+| `plan_start` | First line of each run, only with `SchedulerConfig.trace_append` (the file is then appended to, not truncated) | `run` (1 + the `plan_start` lines already in the file), `unix_ms` (wall-clock time) |
+| `planning_complete` | First line (after `plan_start`), when the caller set `SchedulerConfig.planning` | `planning_ms`, `calls`, `input_tokens`, `output_tokens`, `cached_input_tokens` |
 | `run_start` | Wave admission opens | `tasks`, `primes` |
 | `concurrency_probe` | Auto-probe finished (opt-in) | `chosen_width`, `steps` |
 | `priming_complete` | Cache primes processed (only when the plan has primes) | `primes`, `priming_ms`, `warm_gate` |
@@ -204,6 +322,10 @@ major version.
 Ordering invariants a consumer can rely on:
 
 - `planning_complete` (when present) precedes `run_start`; `run_end` is last.
+  With `trace_append`, these hold within each run: a run starts at its
+  `plan_start` line and ends at the next one (or the end of the file), and
+  its `elapsed_ms` counts from its own wave start (`unix_ms` lines runs
+  up).
 - A task's `task_start` precedes its retry events, which precede its
   `task_complete`. `elapsed_ms` on `task_complete` minus the matching
   `task_start` is queue + execution time.

@@ -112,6 +112,131 @@ pub fn report_first_token(elapsed: Duration) {
     let _ = FIRST_TOKEN_HOOK.try_with(|hook| hook(elapsed));
 }
 
+/// The hook installed around the current call, if any. A wrapper that
+/// installs its own hook (the hedge, `hedge.rs`) forwards to it.
+pub fn current_first_token_hook() -> Option<FirstTokenHook> {
+    FIRST_TOKEN_HOOK.try_with(|hook| hook.clone()).ok()
+}
+
+/// Callback a caller installs around a model call to read the visible text
+/// while it streams: called with the whole text so far each time it grows
+/// (the architect's `plan_pipe` starts export fragments from a streaming
+/// skeleton). A retry or a raced copy starts again from its own first text,
+/// so a listener parses each call on its own, never as an appended delta.
+pub type TextHook = Arc<dyn Fn(&str) + Send + Sync>;
+
+tokio::task_local! {
+    static TEXT_HOOK: TextHook;
+}
+
+/// Run `call` with `hook` installed: a streaming client inside it that calls
+/// [`report_text`] reaches the hook. Task-local, like
+/// [`with_first_token_hook`], so it passes through wrapper clients.
+pub async fn with_text_hook<F: std::future::Future>(hook: TextHook, call: F) -> F::Output {
+    TEXT_HOOK.scope(hook, call).await
+}
+
+/// Report the visible text of the current request so far. A no-op when no
+/// listener is installed (every call outside `with_text_hook`).
+pub fn report_text(text: &str) {
+    let _ = TEXT_HOOK.try_with(|hook| hook(text));
+}
+
+tokio::task_local! {
+    static STREAM_START_HOOK: FirstTokenHook;
+}
+
+/// Run `call` with `hook` installed: a streaming client inside it that calls
+/// [`report_stream_started`] reaches the hook. The hedge (`hedge.rs`) uses
+/// it to decide its race on the first streamed delta of any kind, hidden
+/// reasoning included, so a reasoning model is never decoded twice. The
+/// visible-text [`report_first_token`] is unchanged.
+pub async fn with_stream_start_hook<F: std::future::Future>(
+    hook: FirstTokenHook,
+    call: F,
+) -> F::Output {
+    STREAM_START_HOOK.scope(hook, call).await
+}
+
+/// Report that the current request streamed its first delta (visible text
+/// or `reasoning_content`) after `elapsed`. A no-op when no listener is
+/// installed.
+pub fn report_stream_started(elapsed: Duration) {
+    let _ = STREAM_START_HOOK.try_with(|hook| hook(elapsed));
+}
+
+/// Default number of connections [`ModelClient::prewarm`] opens: about the
+/// width of a wave's widest stage.
+pub const DEFAULT_PREWARM_CONNECTIONS: usize = 40;
+/// Most connections one prewarm opens.
+pub const MAX_PREWARM_CONNECTIONS: usize = 128;
+
+/// What a prewarm did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PrewarmReport {
+    /// Requests sent.
+    pub requested: usize,
+    /// Requests that got an HTTP response (any status: the connection is
+    /// open and back in the pool).
+    pub answered: usize,
+    pub elapsed: Duration,
+}
+
+/// Open up to `connections` connections to `url`'s host at once with cheap
+/// `GET url` requests (no model call, no tokens), reading each body to the
+/// end so the connection goes back to `http`'s idle pool for the requests
+/// that follow. Over HTTP/1.1 each concurrent request needs its own
+/// connection, so the wave's streams then skip connect and TLS.
+pub async fn prewarm_pool(
+    http: &reqwest::Client,
+    url: &str,
+    api_key: Option<&str>,
+    connections: usize,
+) -> PrewarmReport {
+    let started = Instant::now();
+    let requested = connections.min(MAX_PREWARM_CONNECTIONS);
+    let calls = (0..requested).map(|_| {
+        let mut builder = http.get(url);
+        if let Some(key) = api_key {
+            builder = builder.bearer_auth(key);
+        }
+        async move {
+            match builder.send().await {
+                Ok(response) => {
+                    // The body to its end, or the connection is not reused.
+                    let _ = response.bytes().await;
+                    true
+                }
+                Err(_) => false,
+            }
+        }
+    });
+    let answered = futures::future::join_all(calls)
+        .await
+        .into_iter()
+        .filter(|ok| *ok)
+        .count();
+    let report = PrewarmReport {
+        requested,
+        answered,
+        elapsed: started.elapsed(),
+    };
+    tracing::info!(
+        url,
+        requested,
+        answered,
+        prewarm_ms = report.elapsed.as_millis() as u64,
+        "prewarmed the connection pool"
+    );
+    report
+}
+
+/// `base_url`'s model list (`{base}/models`): the cheap request a prewarm
+/// sends.
+pub fn models_url(base_url: &str) -> String {
+    format!("{}/models", base_url.trim_end_matches('/'))
+}
+
 #[derive(Debug, Clone)]
 pub struct CompletionRequest {
     pub system: String,
@@ -222,6 +347,34 @@ pub struct Completion {
 #[async_trait]
 pub trait ModelClient: Send + Sync {
     async fn complete(&self, request: CompletionRequest) -> Result<Completion>;
+
+    /// Open up to `connections` connections to the provider ahead of the
+    /// requests that need them (see [`prewarm_pool`]). No model call. The
+    /// default does nothing; [`OpenAiClient`] sends cheap `GET /models`.
+    async fn prewarm(&self, connections: usize) -> Result<PrewarmReport> {
+        let _ = connections;
+        Ok(PrewarmReport::default())
+    }
+
+    /// The rest of an answer to `request` that stopped at its output budget
+    /// after `partial` (`SchedulerConfig::continue_truncated`): only the new
+    /// text, and how it was asked for. The default asks with a user turn
+    /// ([`crate::continuation::turn_request`]) through [`Self::complete`]; a
+    /// client whose provider continues an assistant prefix overrides this and
+    /// answers [`crate::continuation::ContinueMode::Prefix`].
+    async fn continue_completion(
+        &self,
+        request: CompletionRequest,
+        partial: String,
+    ) -> Result<crate::continuation::Continued> {
+        let completion = self
+            .complete(crate::continuation::turn_request(&request, &partial))
+            .await?;
+        Ok(crate::continuation::Continued {
+            completion,
+            mode: crate::continuation::ContinueMode::Turn,
+        })
+    }
 }
 
 /// One backend of a fan-out pool: a labeled client plus the reasoning effort
@@ -456,7 +609,47 @@ impl FanOutClient {
 
 #[async_trait]
 impl ModelClient for FanOutClient {
-    async fn complete(&self, mut request: CompletionRequest) -> Result<Completion> {
+    async fn complete(&self, request: CompletionRequest) -> Result<Completion> {
+        self.dispatch(
+            request,
+            |client, request| async move { client.complete(request).await },
+            |completion| completion,
+        )
+        .await
+    }
+
+    /// The continuation goes to the backend that the cut request's prompt
+    /// routes to (the same hash), through that backend's own
+    /// `continue_completion`, so its prefix mode is kept.
+    async fn continue_completion(
+        &self,
+        request: CompletionRequest,
+        partial: String,
+    ) -> Result<crate::continuation::Continued> {
+        self.dispatch(
+            request,
+            |client, request| async move { client.continue_completion(request, partial).await },
+            |continued| &mut continued.completion,
+        )
+        .await
+    }
+}
+
+impl FanOutClient {
+    /// `call` on the backend that `request` routes to, with the backend's
+    /// effort default, its health record and its call timeout; `completion`
+    /// reaches the answer's completion to stamp the backend's label on it.
+    async fn dispatch<T, F, Fut>(
+        &self,
+        mut request: CompletionRequest,
+        call: F,
+        completion: fn(&mut T) -> &mut Completion,
+    ) -> Result<T>
+    where
+        F: FnOnce(Arc<dyn ModelClient>, CompletionRequest) -> Fut + Send,
+        Fut: std::future::Future<Output = Result<T>> + Send,
+        T: Send,
+    {
         let hash_index = (Self::route(&request.user) % self.backends.len() as u64) as usize;
         let index = match &self.health {
             None => hash_index,
@@ -467,7 +660,7 @@ impl ModelClient for FanOutClient {
             request.reasoning_effort = backend.default_effort.clone();
         }
         let start = Instant::now();
-        let call = backend.client.complete(request);
+        let call = call(backend.client.clone(), request);
         let limit = self
             .health
             .as_ref()
@@ -486,9 +679,9 @@ impl ModelClient for FanOutClient {
         if let Some(health) = &self.health {
             health.record(index, start.elapsed(), result.is_err());
         }
-        let mut completion = result?;
-        completion.provider = Some(backend.label.clone());
-        Ok(completion)
+        let mut answer = result?;
+        completion(&mut answer).provider = Some(backend.label.clone());
+        Ok(answer)
     }
 }
 
@@ -533,16 +726,33 @@ impl UsageCountingClient {
     }
 }
 
-#[async_trait]
-impl ModelClient for UsageCountingClient {
-    async fn complete(&self, request: CompletionRequest) -> Result<Completion> {
-        let completion = self.inner.complete(request).await?;
+impl UsageCountingClient {
+    fn count(&self, completion: &Completion) {
         let mut usage = self.usage.lock().expect("planning usage lock");
         usage.calls += 1;
         usage.input_tokens += completion.input_tokens;
         usage.output_tokens += completion.output_tokens;
         usage.cached_input_tokens += completion.cached_input_tokens.unwrap_or(0);
+    }
+}
+
+#[async_trait]
+impl ModelClient for UsageCountingClient {
+    async fn complete(&self, request: CompletionRequest) -> Result<Completion> {
+        let completion = self.inner.complete(request).await?;
+        self.count(&completion);
         Ok(completion)
+    }
+
+    /// The inner client's continuation (its prefix mode kept), counted.
+    async fn continue_completion(
+        &self,
+        request: CompletionRequest,
+        partial: String,
+    ) -> Result<crate::continuation::Continued> {
+        let continued = self.inner.continue_completion(request, partial).await?;
+        self.count(&continued.completion);
+        Ok(continued)
     }
 }
 
@@ -551,9 +761,12 @@ impl ModelClient for UsageCountingClient {
 pub struct OpenAiClient {
     http: reqwest::Client,
     endpoint: String,
+    models: String,
     model: String,
     api_key: Option<String>,
     include_stream_usage: bool,
+    idle: Option<Duration>,
+    http2: bool,
 }
 
 impl OpenAiClient {
@@ -563,12 +776,26 @@ impl OpenAiClient {
             bail!("model base URL cannot be empty");
         }
         Ok(Self {
-            http: build_http(Some(DEFAULT_STREAM_IDLE_TIMEOUT))?,
+            http: build_http(Some(DEFAULT_STREAM_IDLE_TIMEOUT), false)?,
             endpoint: format!("{base_url}/chat/completions"),
+            models: models_url(base_url),
             model: model.into(),
             api_key,
             include_stream_usage: false,
+            idle: Some(DEFAULT_STREAM_IDLE_TIMEOUT),
+            http2: false,
         })
+    }
+
+    /// Offer HTTP/2 in the TLS handshake (ALPN `h2`, then `http/1.1`): a
+    /// server that takes it carries every concurrent stream on one
+    /// connection, and a dropped stream (a hedge's loser, a watchdog
+    /// restart) resets only itself. Off (the default) the client speaks
+    /// HTTP/1.1 only, as it always has.
+    pub fn with_http2(mut self, enabled: bool) -> Result<Self> {
+        self.http2 = enabled;
+        self.http = build_http(self.idle, enabled)?;
+        Ok(self)
     }
 
     /// Longest silence tolerated on one request: waiting for the response
@@ -579,7 +806,8 @@ impl OpenAiClient {
     /// longer hang forever. `None` disables the bound. Raise it for servers
     /// that stream nothing while a model reasons for minutes.
     pub fn with_stream_idle_timeout(mut self, idle: Option<Duration>) -> Result<Self> {
-        self.http = build_http(idle)?;
+        self.idle = idle;
+        self.http = build_http(idle, self.http2)?;
         Ok(self)
     }
 
@@ -592,7 +820,7 @@ impl OpenAiClient {
 /// Default stream idle bound (see `OpenAiClient::with_stream_idle_timeout`).
 pub const DEFAULT_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
-fn build_http(idle: Option<Duration>) -> Result<reqwest::Client> {
+fn build_http(idle: Option<Duration>, http2: bool) -> Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(15))
         // Long silent phases (hidden reasoning) must survive NAT and proxy
@@ -601,7 +829,19 @@ fn build_http(idle: Option<Duration>) -> Result<reqwest::Client> {
     if let Some(idle) = idle {
         builder = builder.read_timeout(idle);
     }
+    builder = http_version(builder, http2);
     builder.build().context("failed to construct HTTP client")
+}
+
+/// `http2` off: HTTP/1.1 only (ALPN `http/1.1`), the traffic of a build
+/// without reqwest's `http2` feature. On: ALPN offers `h2` first and the
+/// server chooses.
+pub fn http_version(builder: reqwest::ClientBuilder, http2: bool) -> reqwest::ClientBuilder {
+    if http2 {
+        builder
+    } else {
+        builder.http1_only()
+    }
 }
 
 #[derive(Default)]
@@ -610,10 +850,22 @@ struct StreamUsage {
     output: Option<u64>,
     reasoning: Option<u64>,
     cached: Option<u64>,
+    /// A non-empty `reasoning_content` delta arrived.
+    reasoning_seen: bool,
 }
 
 #[async_trait]
 impl ModelClient for OpenAiClient {
+    async fn prewarm(&self, connections: usize) -> Result<PrewarmReport> {
+        Ok(prewarm_pool(
+            &self.http,
+            &self.models,
+            self.api_key.as_deref(),
+            connections,
+        )
+        .await)
+    }
+
     async fn complete(&self, request: CompletionRequest) -> Result<Completion> {
         let started = Instant::now();
         let mut messages = vec![json!({"role": "system", "content": &request.system})];
@@ -687,14 +939,20 @@ impl ModelClient for OpenAiClient {
         let mut time_to_first_token = None;
         let mut finish_reason = None;
         let mut done = false;
+        let mut stream_started = false;
 
         while let Some(chunk) = response.chunk().await.context("model stream failed")? {
             buffered.extend_from_slice(&chunk);
+            let before = text.len();
             while let Some((event_end, separator_len)) = find_event_boundary(&buffered) {
                 let event_bytes = buffered[..event_end].to_vec();
                 drop(buffered.drain(..event_end + separator_len));
                 let event = String::from_utf8(event_bytes).context("stream was not UTF-8")?;
                 done = consume_event(&event, &mut text, &mut usage, &mut finish_reason)?;
+                if !stream_started && (usage.reasoning_seen || !text.is_empty()) {
+                    stream_started = true;
+                    report_stream_started(started.elapsed());
+                }
                 if time_to_first_token.is_none() && !text.is_empty() {
                     let elapsed = started.elapsed();
                     time_to_first_token = Some(elapsed);
@@ -703,6 +961,9 @@ impl ModelClient for OpenAiClient {
                 if done {
                     break;
                 }
+            }
+            if text.len() > before {
+                report_text(&text);
             }
             if done {
                 break;
@@ -817,6 +1078,14 @@ fn consume_event(
         .and_then(Value::as_str)
     {
         text.push_str(content);
+    }
+
+    if value
+        .pointer("/choices/0/delta/reasoning_content")
+        .and_then(Value::as_str)
+        .is_some_and(|reasoning| !reasoning.is_empty())
+    {
+        usage.reasoning_seen = true;
     }
 
     if let Some(finish) = value
@@ -1329,5 +1598,92 @@ mod tests {
         let mut usage = StreamUsage::default();
         let mut finish = None;
         assert!(consume_event("data: [DONE]", &mut text, &mut usage, &mut finish).unwrap());
+    }
+
+    /// A local HTTP/1.1 server that answers every request with `{}` on a
+    /// kept-alive connection and records each request line, its body size
+    /// and the number of connections.
+    type Seen = Arc<std::sync::Mutex<Vec<(String, usize)>>>;
+
+    fn local_server() -> (String, Seen, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (log, count) = (seen.clone(), connections.clone());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { break };
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let log = log.clone();
+                std::thread::spawn(move || {
+                    let mut writer = stream.try_clone().unwrap();
+                    let mut reader = BufReader::new(stream);
+                    loop {
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                            return;
+                        }
+                        let mut length = 0usize;
+                        loop {
+                            let mut header = String::new();
+                            if reader.read_line(&mut header).unwrap_or(0) == 0 {
+                                return;
+                            }
+                            let lower = header.to_ascii_lowercase();
+                            if let Some(value) = lower.strip_prefix("content-length:") {
+                                length = value.trim().parse().unwrap_or(0);
+                            }
+                            if header == "\r\n" {
+                                break;
+                            }
+                        }
+                        let mut body = vec![0u8; length];
+                        let _ = reader.read_exact(&mut body);
+                        log.lock().unwrap().push((line.trim().to_string(), length));
+                        let reply = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\n\r\n{}";
+                        if writer.write_all(reply.as_bytes()).is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        (format!("http://{address}/v1"), seen, connections)
+    }
+
+    #[tokio::test]
+    async fn prewarm_sends_only_cheap_model_list_requests() {
+        let (base, seen, connections) = local_server();
+        let client = OpenAiClient::new(&base, "m", Some("key".to_string())).unwrap();
+        let report = client.prewarm(6).await.unwrap();
+        assert_eq!(report.requested, 6);
+        assert_eq!(report.answered, 6);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 6);
+        for (line, body) in seen.iter() {
+            assert!(line.starts_with("GET /v1/models "), "{line}");
+            assert_eq!(*body, 0, "no request body, no model call");
+        }
+        // Concurrent HTTP/1.1 requests each open their own connection.
+        assert!(connections.load(std::sync::atomic::Ordering::SeqCst) >= 2);
+    }
+
+    #[tokio::test]
+    async fn prewarm_is_capped_and_the_default_client_does_nothing() {
+        let (base, seen, _) = local_server();
+        let http = build_http(None, false).unwrap();
+        let report = prewarm_pool(&http, &models_url(&base), None, 10_000).await;
+        assert_eq!(report.requested, MAX_PREWARM_CONNECTIONS);
+        assert_eq!(seen.lock().unwrap().len(), MAX_PREWARM_CONNECTIONS);
+        assert_eq!(
+            MockClient::new(Duration::ZERO).prewarm(40).await.unwrap(),
+            PrewarmReport::default()
+        );
+        assert_eq!(
+            models_url("https://api.example.com/v1/"),
+            "https://api.example.com/v1/models"
+        );
     }
 }

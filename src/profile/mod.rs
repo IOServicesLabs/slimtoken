@@ -7,8 +7,12 @@
 //! own profile instead of editing the core.
 
 mod nextjs;
+mod nextjs_guard;
+mod nextjs_repair;
 mod python;
+mod repair;
 mod rust;
+mod staging;
 
 use std::path::Path;
 
@@ -17,9 +21,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::architect::Manifest;
 
-pub use nextjs::NEXTJS;
+pub use nextjs::{client_page_note, next_client_pages, next_dyn_route, NEXTJS};
+pub use nextjs_guard::NEXTJS_GUARD;
+pub use nextjs_repair::{
+    next_classify, next_is_test, next_is_types_file, next_joint_files, next_local_specifiers,
+    next_resolve_import, NEXTJS_REPAIR,
+};
 pub use python::PYTHON;
+pub use repair::{
+    no_prepare, Export, GuardHooks, Problem, RepairHooks, NO_GUARD_HOOKS, NO_REPAIR_HOOKS,
+    PYTHON_REPAIR_HOOKS,
+};
 pub use rust::RUST;
+pub use staging::{
+    glob_match, no_aggregate, Layer, PageSplit, Quality, Split, Staging, NO_PAGE_SPLIT, NO_QUALITY,
+    NO_STAGING,
+};
 
 /// One target stack. Every field is plain data or a plain function so a
 /// profile can be declared as a `static` by any crate.
@@ -75,8 +92,18 @@ pub struct Profile {
     pub normalize_skeleton: fn(&mut Manifest),
     /// Fixups on the full manifest before the plan is built.
     pub normalize_manifest: fn(&mut Manifest),
+    /// Measured fixups that run before `normalize_manifest`, only with
+    /// `PlanOptions::tidy` (`architect::apply_manifest_passes`); `keep`
+    /// for none. Off by default so default plans do not change.
+    pub tidy_manifest: fn(&mut Manifest),
     /// README "Run" and "Tests" sections for the rendered README.
     pub readme_sections: fn(&Manifest) -> String,
+    /// How a staged plan orders the wave (`PlanOptions::staged`).
+    pub staging: Staging,
+    /// What the check-and-repair loop knows about the stack
+    /// (`repair::check_and_repair`); [`NO_REPAIR_HOOKS`] for single-file
+    /// repairs only.
+    pub repair: RepairHooks,
 }
 
 /// Built-in profiles; the first is the fallback when no markers match.
@@ -196,6 +223,17 @@ pub struct ProfileFile {
     pub test_head: Option<String>,
     pub density_rule: Option<String>,
     pub type_ownership_rule: Option<String>,
+    /// Staging fields; each one set here replaces the base's value.
+    pub layers: Option<Vec<(String, Layer)>>,
+    pub test_globs: Option<Vec<String>>,
+    pub type_decl_prefixes: Option<Vec<String>>,
+    pub type_owner_globs: Option<Vec<String>>,
+    pub import_rule: Option<String>,
+    pub staged_rule: Option<String>,
+    pub types_win_rule: Option<String>,
+    pub data_note: Option<String>,
+    pub path_rules: Option<Vec<(String, String)>>,
+    pub measured: Option<bool>,
 }
 
 impl Profile {
@@ -205,7 +243,7 @@ impl Profile {
     pub fn load_file(path: &Path) -> Result<&'static Profile> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("cannot read profile file {}", path.display()))?;
-        let file: ProfileFile = serde_json::from_str(&text)
+        let mut file: ProfileFile = serde_json::from_str(&text)
             .with_context(|| format!("invalid profile file {}", path.display()))?;
         let base = Profile::named(&file.base).ok_or_else(|| {
             let names: Vec<_> = PROFILES.iter().map(|profile| profile.name).collect();
@@ -215,6 +253,17 @@ impl Profile {
                 names.join(", ")
             )
         })?;
+        let name = file.name.take().unwrap_or_else(|| {
+            path.file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "file".to_string())
+        });
+        Ok(Box::leak(Box::new(Profile::extend(base, file, name))))
+    }
+
+    /// Build a profile named `name` from `base`: each field `file` sets
+    /// replaces the base's value, the rest keep it.
+    fn extend(base: &Profile, file: ProfileFile, name: String) -> Profile {
         /// Lease an owned string to 'static (see `load_file`).
         fn lease(value: String) -> &'static str {
             Box::leak(value.into_boxed_str())
@@ -224,12 +273,12 @@ impl Profile {
             let leased: Vec<&'static str> = values.into_iter().map(lease).collect();
             Box::leak(leased.into_boxed_slice())
         }
-        let name = file.name.unwrap_or_else(|| {
-            path.file_stem()
-                .map(|stem| stem.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "file".to_string())
-        });
-        let profile = Profile {
+        /// Lease a list of pairs to 'static (see `load_file`).
+        fn lease_pairs<A, B, T>(pairs: Vec<(A, B)>, lease_pair: fn(A, B) -> T) -> &'static [T] {
+            let leased: Vec<T> = pairs.into_iter().map(|(a, b)| lease_pair(a, b)).collect();
+            Box::leak(leased.into_boxed_slice())
+        }
+        Profile {
             name: lease(name),
             markers: file.markers.map(lease_list).unwrap_or(base.markers),
             comment: file.comment.map(lease).unwrap_or(base.comment),
@@ -265,9 +314,49 @@ impl Profile {
             scaffold: base.scaffold,
             normalize_skeleton: base.normalize_skeleton,
             normalize_manifest: base.normalize_manifest,
+            tidy_manifest: base.tidy_manifest,
             readme_sections: base.readme_sections,
-        };
-        Ok(Box::leak(Box::new(profile)))
+            staging: Staging {
+                layers: file
+                    .layers
+                    .map(|layers| lease_pairs(layers, |glob, layer| (lease(glob), layer)))
+                    .unwrap_or(base.staging.layers),
+                test_globs: file
+                    .test_globs
+                    .map(lease_list)
+                    .unwrap_or(base.staging.test_globs),
+                type_decl_prefixes: file
+                    .type_decl_prefixes
+                    .map(lease_list)
+                    .unwrap_or(base.staging.type_decl_prefixes),
+                type_owner_globs: file
+                    .type_owner_globs
+                    .map(lease_list)
+                    .unwrap_or(base.staging.type_owner_globs),
+                import_rule: file
+                    .import_rule
+                    .map(lease)
+                    .unwrap_or(base.staging.import_rule),
+                staged_rule: file
+                    .staged_rule
+                    .map(lease)
+                    .unwrap_or(base.staging.staged_rule),
+                types_win_rule: file
+                    .types_win_rule
+                    .map(lease)
+                    .unwrap_or(base.staging.types_win_rule),
+                data_note: file.data_note.map(lease).unwrap_or(base.staging.data_note),
+                path_rules: file
+                    .path_rules
+                    .map(|rules| lease_pairs(rules, |glob, rule| (lease(glob), lease(rule))))
+                    .unwrap_or(base.staging.path_rules),
+                measured: file.measured.unwrap_or(base.staging.measured),
+                split: base.staging.split,
+                aggregate: base.staging.aggregate,
+                quality: base.staging.quality,
+            },
+            repair: base.repair,
+        }
     }
 }
 
@@ -375,6 +464,62 @@ mod file_profile_tests {
         assert_eq!(profile.name, "acme");
         assert_eq!(profile.markers, ["acme", "acmejs"].as_slice());
         std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn file_profile_overrides_staging() {
+        let path = write_temp(
+            "staging",
+            r#"{"base":"nextjs","layers":[["**/types.ts","types"],["lib/**","core"]],
+                "test_globs":["**/*.test.*"],"staged_rule":"Wait.","measured":true}"#,
+        );
+        let profile = Profile::load_file(&path).unwrap();
+        let staging = &profile.staging;
+        assert_eq!(
+            staging.layers,
+            [("**/types.ts", Layer::Types), ("lib/**", Layer::Core)].as_slice()
+        );
+        assert_eq!(staging.test_globs, ["**/*.test.*"].as_slice());
+        assert_eq!(staging.staged_rule, "Wait.");
+        assert!(staging.measured);
+        assert_eq!(staging.layer_of("lib/tasks.ts"), Some(Layer::Core));
+        assert_eq!(staging.layer_of("lib/tasks.test.ts"), Some(Layer::Consumer));
+        // Fields the file leaves out keep the base's value.
+        assert_eq!(staging.import_rule, NEXTJS.staging.import_rule);
+        assert_eq!(staging.path_rules, NEXTJS.staging.path_rules);
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn file_profile_inherits_base_staging() {
+        // Built-in bases have no staging yet, so give one a non-empty value.
+        let base = Profile {
+            staging: Staging {
+                layers: &[("lib/**", Layer::Core)],
+                test_globs: &["**/*.test.*"],
+                type_decl_prefixes: &["export interface "],
+                type_owner_globs: &["*.ts"],
+                import_rule: "Import from the file that declares it.",
+                data_note: "Seed data.",
+                path_rules: &[("app/**", "Pages.")],
+                measured: true,
+                ..NO_STAGING
+            },
+            ..NEXTJS
+        };
+        let file: ProfileFile =
+            serde_json::from_str(r#"{"base":"nextjs","staged_rule":"Wait."}"#).unwrap();
+        let profile = Profile::extend(&base, file, "acme".to_string());
+        let staging = &profile.staging;
+        assert_eq!(staging.staged_rule, "Wait.");
+        assert_eq!(staging.layers, base.staging.layers);
+        assert_eq!(staging.test_globs, base.staging.test_globs);
+        assert_eq!(staging.type_decl_prefixes, base.staging.type_decl_prefixes);
+        assert_eq!(staging.type_owner_globs, base.staging.type_owner_globs);
+        assert_eq!(staging.import_rule, base.staging.import_rule);
+        assert_eq!(staging.data_note, base.staging.data_note);
+        assert_eq!(staging.path_rules, base.staging.path_rules);
+        assert!(staging.measured);
     }
 
     #[test]

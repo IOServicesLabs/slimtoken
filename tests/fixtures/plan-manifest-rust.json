@@ -1,0 +1,61 @@
+{
+  "files": [
+    {
+      "path": "Cargo.toml",
+      "purpose": "Package manifest with serde and serde_json.",
+      "exports": []
+    },
+    {
+      "path": "src/lib.rs",
+      "purpose": "Crate root: declares the modules.",
+      "exports": [
+        "pub mod model;",
+        "pub mod store;",
+        "pub mod report;"
+      ]
+    },
+    {
+      "path": "src/model.rs",
+      "purpose": "Expense record and category enum.",
+      "exports": [
+        "pub struct Expense { pub date: String, pub category: Category, pub amount_cents: i64, pub note: String }",
+        "pub enum Category { Food, Rent, Travel, Other }"
+      ]
+    },
+    {
+      "path": "src/store.rs",
+      "purpose": "JSON file store for expenses.",
+      "exports": [
+        "pub fn load(path: &Path) -> std::io::Result<Vec<Expense>>",
+        "pub fn save(path: &Path, expenses: &[Expense]) -> std::io::Result<()>"
+      ],
+      "uses": ["src/model.rs:Expense"]
+    },
+    {
+      "path": "src/report.rs",
+      "purpose": "Monthly totals per category.",
+      "exports": [
+        "pub fn monthly_totals(expenses: &[Expense], month: &str) -> BTreeMap<Category, i64>"
+      ],
+      "uses": ["src/model.rs:Expense", "src/model.rs:Category"]
+    },
+    {
+      "path": "src/main.rs",
+      "purpose": "Command line entry: add, list and report.",
+      "exports": [
+        "fn main()"
+      ],
+      "uses": ["src/store.rs:load", "src/store.rs:save", "src/report.rs:monthly_totals"]
+    }
+  ],
+  "test_files": [
+    {
+      "path": "tests/store.rs",
+      "purpose": "Round-trip through the JSON store."
+    },
+    {
+      "path": "tests/report.rs",
+      "purpose": "Monthly totals per category."
+    }
+  ]
+}

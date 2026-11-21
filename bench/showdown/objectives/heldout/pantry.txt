@@ -1,0 +1,14 @@
+Build "Pantry", a complete recipe and meal planning web app with Next.js (App Router) and TypeScript. No backend: all data lives in local storage, with realistic seed data on first load. No UI or chart libraries: plain React, one global stylesheet, charts drawn with inline SVG.
+
+Pages:
+- Home: this week's meal plan at a glance, recipes cooked this month, and a chart of meals per cuisine.
+- Recipes: list of recipes with search, filter by tag and cooking time; create, edit, delete, mark favorite.
+- Recipe detail: ingredients with quantities and units, steps, servings scaler that recalculates quantities, and notes.
+- Meal plan: a week grid of breakfast, lunch and dinner slots; assign recipes to slots, previous and next week.
+- Shopping list: generated from the week's meal plan with quantities merged per ingredient, check items off, add custom items.
+- Pantry stock: ingredients on hand with quantities; items in stock are left out of the shopping list.
+- Settings: units (metric, imperial), first day of the week, theme (light, dark), and reset demo data.
+
+Put all domain logic in pure lib modules: recipes, ingredients, unit conversion, servings scaling, meal plan, shopping list generation, pantry stock, search, stats, storage, seed data, date helpers and id generation. Include Vitest tests for the lib modules and a README.
+
+Quality bar: every page is complete and usable, with real controls wired to the lib modules. No stubs, no placeholders, no TODO comments, and no import of a file that you do not write. The project must pass `npm install`, `npm run build` (type check included) and `npm test`.

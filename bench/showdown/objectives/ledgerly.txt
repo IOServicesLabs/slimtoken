@@ -1,0 +1,16 @@
+Build "Ledgerly", a complete personal finance web app with Next.js (App Router) and TypeScript. No backend: all data lives in local storage, with realistic seed data on first load. No UI or chart libraries: plain React, one global stylesheet, charts drawn with inline SVG.
+
+Pages:
+- Overview: net worth, income and spending this month, a spending-by-category donut chart, a 12-month cash-flow chart and the latest transactions.
+- Accounts: list of accounts (checking, savings, credit card, cash) with balances; create, rename, close.
+- Transactions: a table of transactions with sorting, filters by account, category and date range, and add, edit and delete.
+- Transaction detail: edit amount, date, payee, category, account, notes and tags; split a transaction across categories.
+- Budgets: a monthly budget per category with progress bars, rollover of unspent amounts, previous and next month.
+- Recurring: recurring bills and incomes with their next due dates, and mark one as paid.
+- Goals: savings goals with a target, a target date, contributions and the monthly amount needed.
+- Reports: spending by category per month, income versus expenses, and CSV export of transactions.
+- Settings: currency, first day of the month for budgets, theme (light, dark), and reset demo data.
+
+Put all domain logic in pure lib modules: money formatting and arithmetic in integer cents, accounts and balances, transactions, splits, categories, budgets and rollover, recurring schedules, goals, cash flow, reports, CSV export, search and filters, storage, seed data, date helpers and id generation. Include Vitest tests for the lib modules and a README.
+
+Quality bar: every page is complete and usable, with real controls wired to the lib modules. No stubs, no placeholders, no TODO comments, and no import of a file that you do not write. The project must pass `npm install`, `npm run build` (type check included) and `npm test`.

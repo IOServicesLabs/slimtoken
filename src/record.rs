@@ -27,6 +27,12 @@ pub struct RecordedExchange {
     /// Some when the provider call failed (a 429 wall, a timeout, ...).
     /// Replay returns an error with this message.
     pub error: Option<String>,
+    /// A continuation (`ModelClient::continue_completion`): how it was asked
+    /// for (`"prefix"` or `"turn"`). Its `request` is the turn request of
+    /// the cut answer (`continuation::turn_request`), whatever the mode, so a
+    /// replay finds it under the same key. Absent for a plain exchange.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continue_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,7 +213,32 @@ impl std::fmt::Debug for ReplayClient {
 #[async_trait]
 impl ModelClient for ReplayClient {
     async fn complete(&self, request: CompletionRequest) -> Result<Completion> {
-        let key = match_key(self.config.mode, &RecordedRequest::from(&request));
+        self.replay(&request)
+            .await
+            .map(|(completion, _)| completion)
+    }
+
+    /// A recorded continuation, in the mode it was recorded with; it is
+    /// stored under the turn request of the cut answer.
+    async fn continue_completion(
+        &self,
+        request: CompletionRequest,
+        partial: String,
+    ) -> Result<crate::continuation::Continued> {
+        let turn = crate::continuation::turn_request(&request, &partial);
+        let (completion, mode) = self.replay(&turn).await?;
+        let mode = match mode.as_deref() {
+            Some("prefix") => crate::continuation::ContinueMode::Prefix,
+            _ => crate::continuation::ContinueMode::Turn,
+        };
+        Ok(crate::continuation::Continued { completion, mode })
+    }
+}
+
+impl ReplayClient {
+    /// The next recorded response for `request`, with its continuation mode.
+    async fn replay(&self, request: &CompletionRequest) -> Result<(Completion, Option<String>)> {
+        let key = match_key(self.config.mode, &RecordedRequest::from(request));
         let exchange = {
             let mut exchanges = self.exchanges.lock().unwrap();
             match exchanges.get_mut(&key) {
@@ -239,7 +270,7 @@ impl ModelClient for ReplayClient {
         if delay_ms > 0 {
             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
         }
-        Ok(Completion::from(recorded))
+        Ok((Completion::from(recorded), exchange.continue_mode))
     }
 }
 
@@ -273,8 +304,46 @@ impl std::fmt::Debug for RecordingClient {
     }
 }
 
+impl RecordingClient {
+    fn write(&self, exchange: &RecordedExchange) -> Result<()> {
+        let mut file = self.file.lock().unwrap();
+        if let Err(error) = writeln!(file, "{}", serde_json::to_string(exchange)?) {
+            tracing::warn!("recording write failed: {error:#}");
+        }
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl ModelClient for RecordingClient {
+    /// The inner client's continuation (its prefix mode kept), recorded
+    /// under the turn request of the cut answer with its mode.
+    async fn continue_completion(
+        &self,
+        request: CompletionRequest,
+        partial: String,
+    ) -> Result<crate::continuation::Continued> {
+        let recorded_request =
+            RecordedRequest::from(&crate::continuation::turn_request(&request, &partial));
+        let result = self.inner.continue_completion(request, partial).await;
+        let exchange = match &result {
+            Ok(continued) => RecordedExchange {
+                request: recorded_request,
+                response: Some(RecordedResponse::from(&continued.completion)),
+                error: None,
+                continue_mode: Some(continued.mode.as_str().to_string()),
+            },
+            Err(error) => RecordedExchange {
+                request: recorded_request,
+                response: None,
+                error: Some(format!("{error:#}")),
+                continue_mode: Some("turn".to_string()),
+            },
+        };
+        self.write(&exchange)?;
+        result
+    }
+
     async fn complete(&self, request: CompletionRequest) -> Result<Completion> {
         let recorded_request = RecordedRequest::from(&request);
         match self.inner.complete(request).await {
@@ -283,6 +352,7 @@ impl ModelClient for RecordingClient {
                     request: recorded_request,
                     response: Some(RecordedResponse::from(&completion)),
                     error: None,
+                    continue_mode: None,
                 };
                 let mut file = self.file.lock().unwrap();
                 if let Err(error) = writeln!(file, "{}", serde_json::to_string(&exchange)?) {
@@ -295,6 +365,7 @@ impl ModelClient for RecordingClient {
                     request: recorded_request,
                     response: None,
                     error: Some(format!("{error:#}")),
+                    continue_mode: None,
                 };
                 let mut file = self.file.lock().unwrap();
                 if let Err(write_error) = writeln!(file, "{}", serde_json::to_string(&exchange)?) {
@@ -386,6 +457,55 @@ mod tests {
             path,
         )
         .expect("recording file opens in temp dir")
+    }
+
+    /// A prefix continuation passes through the recorder with its mode, and
+    /// replays in that mode.
+    #[tokio::test]
+    async fn a_continuation_records_and_replays_with_its_mode() {
+        struct Prefixer;
+        #[async_trait]
+        impl ModelClient for Prefixer {
+            async fn complete(&self, _request: CompletionRequest) -> Result<Completion> {
+                bail!("not a plain request")
+            }
+            async fn continue_completion(
+                &self,
+                _request: CompletionRequest,
+                partial: String,
+            ) -> Result<crate::continuation::Continued> {
+                Ok(crate::continuation::Continued {
+                    completion: Completion {
+                        text: format!("rest of {partial}"),
+                        provider: None,
+                        input_tokens: 1,
+                        output_tokens: 1,
+                        reasoning_tokens: None,
+                        cached_input_tokens: None,
+                        finish_reason: Some("stop".into()),
+                        usage_is_estimated: false,
+                        elapsed: Duration::ZERO,
+                        time_to_first_token: None,
+                    },
+                    mode: crate::continuation::ContinueMode::Prefix,
+                })
+            }
+        }
+        let path = temp_recording("continue");
+        let recorder = RecordingClient::new(Arc::new(Prefixer), &path).unwrap();
+        let live = recorder
+            .continue_completion(request("alpha", 0.2), "abc".into())
+            .await
+            .unwrap();
+        assert_eq!(live.mode, crate::continuation::ContinueMode::Prefix);
+        let replay = ReplayClient::load(&path, ReplayConfig::default()).unwrap();
+        let replayed = replay
+            .continue_completion(request("alpha", 0.2), "abc".into())
+            .await
+            .unwrap();
+        assert_eq!(replayed.mode, crate::continuation::ContinueMode::Prefix);
+        assert_eq!(replayed.completion.text, "rest of abc");
+        std::fs::remove_file(&path).ok();
     }
 
     #[tokio::test]

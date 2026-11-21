@@ -2,18 +2,17 @@ use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use slimtoken::architect::{generate_manifest, plan_from_manifest, ArchitectOptions};
+use slimtoken::architect::{ArchitectOptions, Manifest, ManifestSource, PlanOptions};
 use slimtoken::client::{MockClient, ModelClient, OpenAiClient};
 use slimtoken::control::RunControl;
 use slimtoken::controller::ControllerConfig;
 use slimtoken::dag::{Plan, Task};
+use slimtoken::pipeline::{BuildHooks, BuildOptions, PlanSource, Sink};
 use slimtoken::planner::{generate_plan_with_steering, mock_plan};
 use slimtoken::profile::{DurationProfile, MaxTokensProfile, Profile};
 use slimtoken::runner::RunManager;
 use slimtoken::scheduler::ProbeConfig;
-use slimtoken::scheduler::{
-    execute_plan, execute_plan_with_control, RunReport, SchedulerConfig, TaskStatus,
-};
+use slimtoken::scheduler::{execute_plan, RunReport, SchedulerConfig, TaskStatus};
 #[cfg(feature = "serve")]
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -65,6 +64,12 @@ struct RunArgs {
     /// Directory for plan.json and report.json.
     #[arg(long, default_value = "slimtoken-out")]
     output: PathBuf,
+    /// Also write the project's files here after the run (and after the
+    /// check command's repair): each succeeded file task whose title is a
+    /// path, as the check command read it. Paths that would leave the
+    /// directory are skipped. Off by default.
+    #[arg(long, value_name = "DIR")]
+    out_dir: Option<PathBuf>,
     /// Write and validate the plan, but do not execute its tasks.
     #[arg(long)]
     plan_only: bool,
@@ -194,6 +199,16 @@ struct RunArgs {
     /// arm. A/B.
     #[arg(long, requires = "architect", default_value_t = false, action = clap::ArgAction::Set)]
     architect_type_ownership: bool,
+    /// Pipelined planning: export fragments whose prompts are settled start
+    /// while the skeleton still streams, and are kept only when their request
+    /// is byte-identical to the one sent after the skeleton. A/B.
+    #[arg(long, requires = "architect", default_value_t = false, action = clap::ArgAction::Set)]
+    architect_plan_pipe: bool,
+    /// Compact skeleton: the skeleton call answers one `path: purpose` line
+    /// per file instead of pretty-printed JSON (about 0.6x the output
+    /// tokens); an answer in neither form falls back to today's request. A/B.
+    #[arg(long, requires = "architect", default_value_t = false, action = clap::ArgAction::Set)]
+    architect_skel_compact: bool,
     /// Demanded-test headroom per shard, percent of the objective's demand
     /// (default 115 = the measured value). A/B.
     #[arg(long, requires = "architect", default_value_t = slimtoken::architect::DEFAULT_TEST_QUOTA_PCT)]
@@ -209,6 +224,34 @@ struct RunArgs {
     /// tokens and 19.5 -> 10.9s (one edit round reasoned 7.8k tokens).
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     reconcile_edits: bool,
+    /// With --check-cmd: check and repair for up to this many rounds
+    /// (`repair::check_and_repair`) instead of the one reconcile round. The
+    /// check command reads the project files as a markdown document (a
+    /// ``## `path` `` heading and a fenced block each) and prints the
+    /// `check` format (`ERROR path(l,c): ...`, `FAILED file > test`, and a
+    /// last line `N failed, M passed`); the profile's repair hooks decide
+    /// what a repair sees. The best files are kept, written to --out-dir,
+    /// and the summary is saved as repair.json. 0 (the default) keeps the
+    /// reconcile round. Only path-titled files are checked (not the
+    /// integration sink), and the repair rounds do not write the journal.
+    #[arg(long, requires = "test_cmd", default_value_t = 0, value_name = "N")]
+    repair_rounds: usize,
+    /// With --repair-rounds: check the files that landed during the wave
+    /// (with --in-wave-check-cmd, on the files whose imports have landed)
+    /// and send a file's repair while the rest of the wave still streams
+    /// (`inwave`); the repair rounds still check the whole project after
+    /// the wave. Off by default. Needs --in-wave-check-cmd: the check
+    /// command of --repair-rounds is never used here, since its rules over
+    /// the whole project would see files that have not landed yet (without
+    /// it the run warns and repairs after the wave only).
+    #[arg(long, requires = "repair_rounds")]
+    in_wave_repair: bool,
+    /// The check command of --in-wave-repair: it gets the landed files (as
+    /// the check command gets the project) and must report only problems
+    /// that depend on a file and the files it imports (a type check, the
+    /// tests), not rules over the whole project.
+    #[arg(long, requires = "in_wave_repair", value_name = "CMD")]
+    in_wave_check_cmd: Option<String>,
     /// Test shards depend on the modules they cover and see their code, so
     /// tests assert the implemented behavior where contracts are silent.
     /// Plan-replay ABBA run (DeepSeek, 2 rounds): own tests 91.1 -> 97.2%,
@@ -324,6 +367,24 @@ struct ClientArgs {
     /// stream nothing while a model reasons for minutes.
     #[arg(long, default_value_t = 120)]
     stream_idle_timeout_secs: u64,
+    /// Offer HTTP/2 to the provider (ALPN h2, then http/1.1; the server
+    /// chooses). Off: HTTP/1.1 only, one connection per concurrent stream.
+    #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+    http2: bool,
+    /// At run start, open this many provider connections with cheap
+    /// `GET {base}/models` requests (no model call), beside the first
+    /// planning call, so the wave's streams skip connect and TLS. 0 (the
+    /// default) opens none; at most 128.
+    #[arg(long, default_value_t = 0)]
+    prewarm: usize,
+    /// Send an identical copy of a request that has no first token after
+    /// this many milliseconds; the copy whose first token comes first wins
+    /// and the other is dropped. 0 (the default) sends no copies.
+    #[arg(long, default_value_t = 0)]
+    hedge_after_ms: u64,
+    /// Most copies `--hedge-after-ms` sends in one run.
+    #[arg(long, default_value_t = slimtoken::hedge::DEFAULT_MAX_HEDGES)]
+    hedge_max: usize,
     /// Record every provider request and response (errors included) to this
     /// JSONL file. Replay the recording later with --replay-from for
     /// zero-token, deterministic reruns of the same run.
@@ -494,7 +555,8 @@ struct SchedulerArgs {
     /// On failure, artifacts named in its report are repaired once under
     /// contract-arbitrated rules and the round is kept only if no more
     /// tests fail (see `reconcile`). Summary saved as reconcile.json.
-    #[arg(long, value_name = "CMD")]
+    /// `--test-cmd` is the older name of this flag and still works.
+    #[arg(long = "check-cmd", visible_alias = "test-cmd", value_name = "CMD")]
     test_cmd: Option<String>,
     /// Cache-warm gate: after cache primes complete, canary readers poll the
     /// server's cached-token report until every primed prefix reads back warm
@@ -674,6 +736,7 @@ impl SchedulerArgs {
             cache_warm_poll: Duration::from_secs(1),
             cache_warm_budget: Duration::from_secs(12),
             trace_path: self.trace_out.clone(),
+            trace_append: false,
             repair_error_chars: Some(self.repair_error_chars),
             max_concurrent_repairs: self.max_concurrent_repairs,
             repair_inject_after_ms: self.repair_inject_after_ms,
@@ -685,6 +748,9 @@ impl SchedulerArgs {
             // Stamped per run by the caller that owns the output directory.
             journal_path: None,
             shared_limits: None,
+            continue_truncated: None,
+            continue_runaway_tokens: None,
+            file_min_tokens: None,
         })
     }
 }
@@ -831,34 +897,49 @@ fn manifest_cache_key(objective: &str, args: &RunArgs, max_tasks: usize) -> Stri
     format!("{:016x}", hasher.finish())
 }
 
-/// Manifest from the content cache when present, else generate and store.
-/// A cache hit skips every architect call: planning wall and planning
-/// tokens both drop to zero with a byte-identical manifest.
-async fn manifest_from_cache_or_generate(
+/// Manifest from the content cache when present. A cache hit skips every
+/// architect call: planning wall and planning tokens both drop to zero with
+/// a byte-identical manifest.
+fn cached_manifest(
     cache_file: Option<&std::path::Path>,
-    client: &dyn slimtoken::client::ModelClient,
-    objective: &str,
-    max_tasks: usize,
-    steering: &[String],
-    options: &ArchitectOptions,
-) -> Result<slimtoken::architect::Manifest> {
-    if let Some(path) = cache_file {
-        if let Ok(text) = std::fs::read_to_string(path) {
-            info!(path = %path.display(), "manifest cache hit");
-            return serde_json::from_str(&text)
-                .with_context(|| format!("invalid cached manifest {}", path.display()));
-        }
+) -> Result<Option<slimtoken::architect::Manifest>> {
+    let Some(path) = cache_file else {
+        return Ok(None);
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Ok(None);
+    };
+    info!(path = %path.display(), "manifest cache hit");
+    serde_json::from_str(&text)
+        .map(Some)
+        .with_context(|| format!("invalid cached manifest {}", path.display()))
+}
+
+/// Store a freshly generated manifest in the content cache.
+fn store_manifest(path: &std::path::Path, manifest: &slimtoken::architect::Manifest) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
     }
-    let manifest = generate_manifest(client, objective, max_tasks, steering, options).await?;
-    if let Some(path) = cache_file {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create {}", parent.display()))?;
-        }
-        std::fs::write(path, serde_json::to_string_pretty(&manifest)?)
-            .with_context(|| format!("failed to write {}", path.display()))?;
+    std::fs::write(path, serde_json::to_string_pretty(manifest)?)
+        .with_context(|| format!("failed to write {}", path.display()))
+}
+
+/// The manifest pass before planning: a fresh manifest goes into the cache
+/// (`store`), then every manifest is written to `output/manifest.json`.
+fn save_manifest(
+    store: Option<&std::path::Path>,
+    output: &std::path::Path,
+    manifest: &slimtoken::architect::Manifest,
+) -> Result<()> {
+    if let Some(path) = store {
+        store_manifest(path, manifest)?;
     }
-    Ok(manifest)
+    std::fs::create_dir_all(output)
+        .with_context(|| format!("failed to create {}", output.display()))?;
+    let path = output.join("manifest.json");
+    let bytes = serde_json::to_vec_pretty(manifest).context("failed to serialize JSON")?;
+    std::fs::write(&path, bytes).with_context(|| format!("failed to write {}", path.display()))
 }
 
 async fn run(mut args: RunArgs) -> Result<()> {
@@ -884,15 +965,32 @@ async fn run(mut args: RunArgs) -> Result<()> {
         }
         args.client.provider = Some(first.to_string());
     }
-    if let Some(preset) = apply_client_preset(&mut args.client) {
-        if args.architect_effort == "minimal" {
-            args.architect_effort = preset.architect_effort.to_string();
-        }
-        if !preset.architect_schema {
-            args.architect_schema = false;
-        }
+    let preset = apply_client_preset(&mut args.client);
+    if let Some(preset) = &preset {
+        // The library helper stamps the architect knobs; they go back into
+        // the flags because the manifest cache key hashes the flags.
+        let mut architect = ArchitectOptions {
+            fragment_effort: args.architect_effort.clone(),
+            schema: args.architect_schema,
+            ..ArchitectOptions::default()
+        };
+        preset.apply_architect(&mut architect);
+        args.architect_effort = architect.fragment_effort;
+        args.architect_schema = architect.schema;
         if args.scheduler.controller_burst == slimtoken::controller::DEFAULT_COLD_START_BURST_CAP {
             args.scheduler.controller_burst = preset.cold_burst_cap;
+        }
+        // The other start settings of the preset, while the flags still
+        // have their default values.
+        let library = slimtoken::controller::ControllerConfig::default();
+        if args.scheduler.controller_hint_cap == library.cold_hint_cap {
+            args.scheduler.controller_hint_cap = preset.cold_hint_cap;
+        }
+        if args.scheduler.controller_start_pct == library.start_percent {
+            args.scheduler.controller_start_pct = preset.start_percent;
+        }
+        if args.scheduler.first_token_watchdog.is_none() {
+            args.scheduler.first_token_watchdog = preset.first_token_watchdog.map(f64::from);
         }
     }
     if args.client.fanout.is_some() {
@@ -1005,15 +1103,19 @@ async fn run(mut args: RunArgs) -> Result<()> {
         slimtoken::UsageCountingClient::new(planner_client.clone(), planning_usage.clone()),
     );
     let planning_start = std::time::Instant::now();
-    let mut plan = if let Some(path) = &args.plan {
-        load_plan(path).await?
+    // The plans the CLI makes itself (a loaded plan, a mock, a direct or a
+    // general plan) go into `pipeline::build` as given plans; an architect
+    // wave plans inside it (`plan_project_with`).
+    let mut wave: Option<WavePlanning> = None;
+    let given = if let Some(path) = &args.plan {
+        Some(load_plan(path).await?)
     } else {
         let objective = args
             .objective
             .as_deref()
             .context("provide --objective or --plan")?;
         if args.mock {
-            mock_plan(objective)
+            Some(mock_plan(objective))
         } else if args.architect {
             // Tighter budget than the general planner: a greenfield build
             // should be ~7 one-file workers, not 48. Larger requests are
@@ -1051,167 +1153,152 @@ async fn run(mut args: RunArgs) -> Result<()> {
                 Route::Wave => false,
             };
             if direct {
-                slimtoken::architect::direct_response_plan(objective)
+                Some(slimtoken::architect::direct_response_plan(objective))
             } else {
-                let manifest = match &args.manifest {
+                let plan_options = PlanOptions {
+                    tests_see_code: args.architect_tests_see_code,
+                    wave_wiring: args.architect_wiring == Wiring::Wave,
+                    density: args.architect_density,
+                    quota_pct: args.architect_test_quota,
+                    scope_contracts: args.architect_scope_contracts,
+                    ..PlanOptions::default()
+                };
+                let cache_file = args.manifest_cache.as_ref().map(|dir| {
+                    dir.join(format!(
+                        "{}.json",
+                        manifest_cache_key(objective, &args, max_tasks)
+                    ))
+                });
+                let saved = match &args.manifest {
                     Some(path) => {
                         let text = tokio::fs::read_to_string(path)
                             .await
                             .with_context(|| format!("failed to read {}", path.display()))?;
-                        serde_json::from_str(&text)
-                            .with_context(|| format!("invalid manifest {}", path.display()))?
-                    }
-                    None => {
-                        let options = ArchitectOptions {
-                            force_split: !args.architect_single_shot,
-                            cache_key: args.scheduler.prompt_cache_key.clone(),
-                            hedge: args.architect_hedge.clamp(1, 4),
-                            schema: args.architect_schema,
-                            fragment_effort: args.architect_effort.clone(),
-                            edges: args.architect_edges,
-                            examples: args.architect_examples,
-                            files_per_fragment: args.architect_files_per_fragment,
-                            objective_skeleton: args.architect_objective_skeleton,
-                            profile,
-                            wiring: args.architect_wiring == Wiring::Plan,
-                            type_ownership: args.architect_type_ownership,
-                        };
-                        let cache_file = args.manifest_cache.as_ref().map(|dir| {
-                            dir.join(format!(
-                                "{}.json",
-                                manifest_cache_key(objective, &args, max_tasks)
-                            ))
-                        });
-                        manifest_from_cache_or_generate(
-                            cache_file.as_deref(),
-                            planning_client.as_ref(),
-                            objective,
-                            max_tasks,
-                            &args.steering,
-                            &options,
+                        Some(
+                            serde_json::from_str(&text)
+                                .with_context(|| format!("invalid manifest {}", path.display()))?,
                         )
-                        .await?
                     }
+                    None => cached_manifest(cache_file.as_deref())?,
                 };
-                tokio::fs::create_dir_all(&args.output)
-                    .await
-                    .with_context(|| format!("failed to create {}", args.output.display()))?;
-                write_json(&args.output.join("manifest.json"), &manifest).await?;
-                plan_from_manifest(
-                    objective,
-                    &manifest,
-                    max_tasks,
+                // Only a manifest the architect just wrote goes into the cache.
+                let store = if saved.is_none() { cache_file } else { None };
+                let architect = ArchitectOptions {
+                    early_manifest: None,
+                    force_split: !args.architect_single_shot,
+                    cache_key: args.scheduler.prompt_cache_key.clone(),
+                    hedge: args.architect_hedge.clamp(1, 4),
+                    schema: args.architect_schema,
+                    fragment_effort: args.architect_effort.clone(),
+                    edges: args.architect_edges,
+                    examples: args.architect_examples,
+                    files_per_fragment: args.architect_files_per_fragment,
+                    objective_skeleton: args.architect_objective_skeleton,
                     profile,
-                    &slimtoken::architect::PlanOptions {
-                        tests_see_code: args.architect_tests_see_code,
-                        wave_wiring: args.architect_wiring == Wiring::Wave,
-                        density: args.architect_density,
-                        quota_pct: args.architect_test_quota,
-                        scope_contracts: args.architect_scope_contracts,
-                    },
-                )?
+                    wiring: args.architect_wiring == Wiring::Plan,
+                    type_ownership: args.architect_type_ownership,
+                    contract: false,
+                    page_local: false,
+                    semantics: false,
+                    types_first: false,
+                    layered: false,
+                    core_whole: false,
+                    references: false,
+                    review: false,
+                    plan_pipe: args.architect_plan_pipe,
+                    types_from_paths: false,
+                    // Needs the page-local fold, which the CLI does not run.
+                    split_pages: None,
+                    skel_compact: args
+                        .architect_skel_compact
+                        .then(slimtoken::skelcompact::SkelCompact::default),
+                };
+                wave = Some(WavePlanning {
+                    max_tasks,
+                    plan_options,
+                    architect,
+                    saved,
+                    store,
+                    stack: profile.unwrap_or_else(|| Profile::detect(objective)),
+                });
+                None
             }
         } else {
-            generate_plan_with_steering(
-                planning_client.as_ref(),
-                objective,
-                args.max_tasks,
-                &args.steering,
+            Some(
+                generate_plan_with_steering(
+                    planning_client.as_ref(),
+                    objective,
+                    args.max_tasks,
+                    &args.steering,
+                )
+                .await?,
             )
-            .await?
         }
     };
-    plan.validate().context("invalid execution plan")?;
-    let planning_ms = planning_start.elapsed().as_millis() as u64;
-    // planning-phase billing counted at the client seam. Zero calls is
-    // the truthful accounting for a --plan load, a mock run, or a manifest
-    // cache hit (planning happened, no model calls).
-    let counted_planning = planning_usage.lock().expect("planning usage").clone();
 
-    tokio::fs::create_dir_all(&args.output)
-        .await
-        .with_context(|| format!("failed to create {}", args.output.display()))?;
-    let plan_path = args.output.join("plan.json");
-    write_json(&plan_path, &plan).await?;
-    info!(tasks = plan.tasks.len(), path = %plan_path.display(), "plan saved");
-
-    if args.plan_only {
-        println!("Plan saved to {}", plan_path.display());
+    // Cache and manifest.json are written before the plan is built, so a
+    // failed plan still leaves its manifest on disk.
+    let store = wave.as_ref().and_then(|wave| wave.store.clone());
+    let output = args.output.clone();
+    let mut save = |manifest: &mut Manifest| -> Result<()> {
+        save_manifest(store.as_deref(), &output, manifest)
+    };
+    let mut options = BuildOptions {
+        steering: args.steering.clone(),
+        profile,
+        planner: Some(planning_client.clone()),
+        control: control.clone(),
+        started: Some(planning_start),
+        out_dir: args.out_dir.clone(),
+        repair: slimtoken::repair::RepairPolicy {
+            max_rounds: args.repair_rounds,
+            ..slimtoken::repair::RepairPolicy::default()
+        },
+        in_wave: args
+            .in_wave_repair
+            .then(slimtoken::inwave::InWaveOptions::default),
+        ..BuildOptions::default()
+    };
+    match (given, wave) {
+        (Some(plan), _) => options.source = PlanSource::Given(plan),
+        (None, Some(wave)) => {
+            options.max_tasks = wave.max_tasks;
+            options.architect = wave.architect;
+            options.plan = wave.plan_options;
+            options.manifest = ManifestSource {
+                saved: wave.saved,
+                prepare: Some(&mut save),
+            };
+            // The preset's plan shape, and the assembled final document for
+            // a stack whose staging is measured (its wave writes project
+            // files: the model sink is skipped).
+            options.apply_stack(wave.stack, preset.as_ref());
+        }
+        (None, None) => unreachable!("no plan and no architect wave"),
+    }
+    let mut hooks = CliHooks {
+        args: &args,
+        sink: options.sink,
+        planning_usage: planning_usage.clone(),
+        control: control.clone(),
+        wave_client: wave_client.clone(),
+        planning_ms: 0,
+        counted_planning: slimtoken::PlanningUsage::default(),
+        integration_id: None,
+        checker: None,
+        in_wave_checker: None,
+    };
+    options.hooks = Some(&mut hooks);
+    let objective = args.objective.as_deref().unwrap_or_default();
+    let outcome = slimtoken::pipeline::build(objective, wave_client.clone(), options).await?;
+    let integration_id = hooks.integration_id.take();
+    let Some(report) = outcome.report else {
+        println!("Plan saved to {}", args.output.join("plan.json").display());
         return Ok(());
-    }
-
-    // Harness-level final integration: append a sink task that depends on
-    // every leaf, so the user gets ONE consolidated deliverable instead of
-    // split per-task fragments. Planners often emit a fan-out DAG whose own
-    // "integration" task has no dependencies and therefore integrates
-    // nothing; wiring the sink here makes aggregation unconditional. The
-    // "assemble" sink skips the model call entirely and lets
-    // build_final_output concatenate leaf outputs deterministically.
-    let integration_id = if args.integrate && args.sink == "model" && !plan.tasks.is_empty() {
-        let ids = append_integration_task(&mut plan, args.sink_shards);
-        write_json(&plan_path, &plan).await?;
-        Some(ids)
-    } else {
-        None
     };
-
-    let mut config = args
-        .scheduler
-        .config(args.client.reasoning_effort.clone())?;
-    config.planning = Some(slimtoken::PlanningSnapshot {
-        planning_ms,
-        calls: counted_planning.calls,
-        input_tokens: counted_planning.input_tokens,
-        output_tokens: counted_planning.output_tokens,
-        cached_input_tokens: counted_planning.cached_input_tokens,
-    });
-
-    // Read the earlier run's journal BEFORE this run opens its own: resuming
-    // into the same output directory rewrites that file.
-    if let Some(journal) = &args.resume_from {
-        let restored = slimtoken::scheduler::resume_plan_from_journal(&mut plan, journal)?;
-        info!(restored, tasks = plan.tasks.len(), journal = %journal.display(), "resumed finished tasks from journal");
-    }
-    config.journal_path = Some(args.output.join("journal.jsonl"));
-
-    // First Ctrl-C cancels the wave: in-flight requests are dropped and the
-    // report (with what finished) is still written. A second one exits.
-    let interrupt = control.clone();
-    tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            eprintln!("interrupt: cancelling the run (Ctrl-C again to exit now)");
-            interrupt.cancel();
-            if tokio::signal::ctrl_c().await.is_ok() {
-                std::process::exit(130);
-            }
-        }
-    });
-
-    let test_cmd = args.scheduler.test_cmd.clone();
-    let mut report =
-        execute_plan_with_control(&plan, wave_client.clone(), config.clone(), control).await?;
-    // phase attribution: the wave duration is the scheduler's own
-    // elapsed; planning (manifest + plan build, measured above) and reconcile
-    // happen outside it and are stamped here.
-    report.phases.planning_ms = Some(planning_ms);
-    // planning-phase tokens live in the phases, outside the wave
-    // totals (which cover wave tasks only) — overhead ratios add both.
-    report.phases.planning_input_tokens = Some(counted_planning.input_tokens);
-    report.phases.planning_output_tokens = Some(counted_planning.output_tokens);
-    if let Some(command) = &test_cmd {
-        let reconcile_start = std::time::Instant::now();
-        let summary = slimtoken::reconcile::reconcile_with(
-            &plan,
-            &mut report,
-            wave_client,
-            config,
-            command,
-            |report| build_final_output(report, &plan, integration_id.as_deref().unwrap_or(&[])),
-            args.reconcile_edits,
-        )
-        .await?;
-        report.phases.reconcile_ms = Some(reconcile_start.elapsed().as_millis() as u64);
-        write_json(&args.output.join("reconcile.json"), &summary).await?;
+    let plan = outcome.plan;
+    if let Some(summary) = &outcome.repair {
+        write_json(&args.output.join("repair.json"), summary).await?;
     }
     let report_path = args.output.join("report.json");
     write_json(&report_path, &report).await?;
@@ -1223,11 +1310,271 @@ async fn run(mut args: RunArgs) -> Result<()> {
     std::fs::write(&final_path, &final_doc)
         .with_context(|| format!("failed to write {}", final_path.display()))?;
     println!("Final output saved to {}", final_path.display());
+    if let Some(dir) = &args.out_dir {
+        println!(
+            "{} project files written to {}",
+            outcome.files.len(),
+            dir.display()
+        );
+    }
 
     if !report.is_success() {
         bail!("run completed with failed or skipped tasks; inspect report.json");
     }
     Ok(())
+}
+
+/// The architect wave of `run`, planned in `pipeline::build`.
+struct WavePlanning {
+    max_tasks: usize,
+    plan_options: PlanOptions,
+    architect: ArchitectOptions,
+    saved: Option<Manifest>,
+    /// The manifest cache file to fill (a cache miss only).
+    store: Option<PathBuf>,
+    /// The profile the wave is planned with (`--profile`, or detected).
+    stack: &'static Profile,
+}
+
+/// What `run` does between the steps of `pipeline::build`: save the plan,
+/// stop with `--plan-only`, append the model sink, build the scheduler
+/// config, resume a journal and catch Ctrl-C; after the wave, stamp the
+/// planning phase and run the one reconcile round (`--check-cmd` without
+/// `--repair-rounds`).
+struct CliHooks<'a> {
+    args: &'a RunArgs,
+    /// The sink of `BuildOptions` (`Assemble` for a measured stack's wave).
+    sink: Sink,
+    planning_usage: Arc<std::sync::Mutex<slimtoken::PlanningUsage>>,
+    control: RunControl,
+    wave_client: Arc<dyn ModelClient>,
+    planning_ms: u64,
+    counted_planning: slimtoken::PlanningUsage,
+    integration_id: Option<Vec<String>>,
+    /// The checker of `--repair-rounds`, made once the plan is known.
+    checker: Option<ProjectFilesChecker<slimtoken::check::CommandChecker>>,
+    /// The checker of `--in-wave-check-cmd`, made with `checker`.
+    in_wave_checker: Option<ProjectFilesChecker<slimtoken::check::CommandChecker>>,
+}
+
+#[slimtoken::async_trait]
+impl BuildHooks for CliHooks<'_> {
+    async fn planned(
+        &mut self,
+        _: Option<&Manifest>,
+        plan: &mut Plan,
+        scheduler: &mut SchedulerConfig,
+        planning_ms: u64,
+    ) -> Result<bool> {
+        let args = self.args;
+        plan.validate().context("invalid execution plan")?;
+        self.planning_ms = planning_ms;
+        // planning-phase billing counted at the client seam. Zero calls is
+        // the truthful accounting for a --plan load, a mock run, or a manifest
+        // cache hit (planning happened, no model calls).
+        self.counted_planning = self.planning_usage.lock().expect("planning usage").clone();
+
+        tokio::fs::create_dir_all(&args.output)
+            .await
+            .with_context(|| format!("failed to create {}", args.output.display()))?;
+        let plan_path = args.output.join("plan.json");
+        write_json(&plan_path, &*plan).await?;
+        info!(tasks = plan.tasks.len(), path = %plan_path.display(), "plan saved");
+
+        if args.plan_only {
+            return Ok(false);
+        }
+
+        // Harness-level final integration: append a sink task that depends on
+        // every leaf, so the user gets ONE consolidated deliverable instead of
+        // split per-task fragments. Planners often emit a fan-out DAG whose own
+        // "integration" task has no dependencies and therefore integrates
+        // nothing; wiring the sink here makes aggregation unconditional. The
+        // "assemble" sink skips the model call entirely and lets
+        // build_final_output concatenate leaf outputs deterministically.
+        if args.integrate
+            && args.sink == "model"
+            && self.sink == Sink::Model
+            && !plan.tasks.is_empty()
+        {
+            let ids = append_integration_task(plan, args.sink_shards);
+            write_json(&plan_path, &*plan).await?;
+            self.integration_id = Some(ids);
+        }
+
+        let mut config = args
+            .scheduler
+            .config(args.client.reasoning_effort.clone())?;
+        config.planning = Some(slimtoken::PlanningSnapshot {
+            planning_ms,
+            calls: self.counted_planning.calls,
+            input_tokens: self.counted_planning.input_tokens,
+            output_tokens: self.counted_planning.output_tokens,
+            cached_input_tokens: self.counted_planning.cached_input_tokens,
+        });
+
+        // Read the earlier run's journal BEFORE this run opens its own: resuming
+        // into the same output directory rewrites that file.
+        if let Some(journal) = &args.resume_from {
+            let restored = slimtoken::scheduler::resume_plan_from_journal(plan, journal)?;
+            info!(restored, tasks = plan.tasks.len(), journal = %journal.display(), "resumed finished tasks from journal");
+        }
+        config.journal_path = Some(args.output.join("journal.jsonl"));
+
+        // First Ctrl-C cancels the wave: in-flight requests are dropped and the
+        // report (with what finished) is still written. A second one exits.
+        let interrupt = self.control.clone();
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                eprintln!("interrupt: cancelling the run (Ctrl-C again to exit now)");
+                interrupt.cancel();
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    std::process::exit(130);
+                }
+            }
+        });
+
+        // `--repair-rounds`: check only the project files, not the internal
+        // tasks and the integration sink.
+        if let Some(command) = args
+            .scheduler
+            .test_cmd
+            .as_ref()
+            .filter(|_| args.repair_rounds > 0)
+        {
+            let sinks = self.integration_id.as_deref().unwrap_or_default();
+            let skip: std::collections::BTreeSet<String> = plan
+                .tasks
+                .iter()
+                .filter(|task| task.internal || sinks.contains(&task.id))
+                .map(|task| task.title.clone())
+                .collect();
+            self.in_wave_checker = args
+                .in_wave_check_cmd
+                .as_ref()
+                .filter(|_| args.in_wave_repair)
+                .map(|landed| ProjectFilesChecker {
+                    inner: slimtoken::check::CommandChecker::new(landed.clone()),
+                    skip: skip.clone(),
+                });
+            self.checker = Some(ProjectFilesChecker {
+                inner: slimtoken::check::CommandChecker::new(command.clone()),
+                skip,
+            });
+        }
+        *scheduler = config;
+        Ok(true)
+    }
+
+    async fn executed(
+        &mut self,
+        plan: &mut Plan,
+        report: &mut RunReport,
+        scheduler: &mut SchedulerConfig,
+    ) -> Result<bool> {
+        let args = self.args;
+        // phase attribution: the wave duration is the scheduler's own
+        // elapsed; planning (manifest + plan build, measured above) and reconcile
+        // happen outside it and are stamped here.
+        report.phases.planning_ms = Some(self.planning_ms);
+        // planning-phase tokens live in the phases, outside the wave
+        // totals (which cover wave tasks only) — overhead ratios add both.
+        report.phases.planning_input_tokens = Some(self.counted_planning.input_tokens);
+        report.phases.planning_output_tokens = Some(self.counted_planning.output_tokens);
+        // `--check-cmd` without `--repair-rounds`: the one reconcile round.
+        if let Some(command) = args
+            .scheduler
+            .test_cmd
+            .as_ref()
+            .filter(|_| self.checker.is_none())
+        {
+            let reconcile_start = std::time::Instant::now();
+            let sinks = self.integration_id.clone().unwrap_or_default();
+            let plan: &Plan = plan;
+            let summary = slimtoken::reconcile::reconcile_with(
+                plan,
+                report,
+                self.wave_client.clone(),
+                scheduler.clone(),
+                command,
+                |report| build_final_output(report, plan, &sinks),
+                args.reconcile_edits,
+            )
+            .await?;
+            report.phases.reconcile_ms = Some(reconcile_start.elapsed().as_millis() as u64);
+            write_json(&args.output.join("reconcile.json"), &summary).await?;
+        }
+        Ok(true)
+    }
+
+    fn checker(&self) -> Option<&dyn slimtoken::check::Checker> {
+        self.checker
+            .as_ref()
+            .map(|checker| checker as &dyn slimtoken::check::Checker)
+    }
+
+    fn in_wave_checker(&self) -> Option<&dyn slimtoken::check::Checker> {
+        self.in_wave_checker
+            .as_ref()
+            .map(|checker| checker as &dyn slimtoken::check::Checker)
+    }
+}
+
+/// The checker of `--repair-rounds`: it passes only the project files on,
+/// the tasks with a path title ([`looks_like_path`]) that are not in `skip`
+/// (internal tasks and the integration sink, which holds a pre-repair copy
+/// of every file), as `write_project` writes them.
+///
+/// [`looks_like_path`]: slimtoken::project::looks_like_path
+struct ProjectFilesChecker<C> {
+    inner: C,
+    skip: std::collections::BTreeSet<String>,
+}
+
+impl<C> ProjectFilesChecker<C> {
+    fn project_files(
+        &self,
+        files: &std::collections::BTreeMap<String, String>,
+    ) -> std::collections::BTreeMap<String, String> {
+        files
+            .iter()
+            .filter(|(path, _)| {
+                !self.skip.contains(*path) && slimtoken::project::looks_like_path(path.trim())
+            })
+            .map(|(path, text)| (path.clone(), text.clone()))
+            .collect()
+    }
+}
+
+#[async_trait::async_trait]
+impl<C: slimtoken::check::Checker> slimtoken::check::Checker for ProjectFilesChecker<C> {
+    async fn check(
+        &self,
+        files: &std::collections::BTreeMap<String, String>,
+        mode: slimtoken::check::CheckMode,
+        key: &str,
+    ) -> Result<slimtoken::check::CheckResult> {
+        let files = self.project_files(files);
+        self.inner.check(&files, mode, key).await
+    }
+
+    async fn confirm(
+        &self,
+        files: &std::collections::BTreeMap<String, String>,
+        result: slimtoken::check::CheckResult,
+        key: &str,
+    ) -> Result<slimtoken::check::CheckResult> {
+        let files = self.project_files(files);
+        self.inner.confirm(&files, result, key).await
+    }
+
+    async fn finish(&self, key: &str) -> Result<()> {
+        self.inner.finish(key).await
+    }
+
+    fn checks_landed_files(&self) -> bool {
+        self.inner.checks_landed_files()
+    }
 }
 
 /// Appends sink integration tasks depending on every leaf of `plan`.
@@ -1274,6 +1621,7 @@ fn append_integration_task(plan: &mut Plan, shards: usize) -> Vec<String> {
             static_output: None,
             reasoning_effort: None,
             internal: false,
+            prefix_split: None,
         });
         return vec![LEGACY_ID.to_string()];
     }
@@ -1323,6 +1671,7 @@ fn append_integration_task(plan: &mut Plan, shards: usize) -> Vec<String> {
             static_output: None,
             reasoning_effort: None,
             internal: false,
+            prefix_split: None,
         });
         ids.push(id);
     }
@@ -1548,6 +1897,7 @@ async fn bench(args: BenchArgs) -> Result<()> {
                 static_output: None,
                 reasoning_effort: None,
                 internal: false,
+                prefix_split: None,
             })
             .collect(),
     };
@@ -1700,6 +2050,7 @@ async fn run_arm(
                 static_output: None,
                 reasoning_effort: None,
                 internal: false,
+                prefix_split: None,
             })
             .collect(),
     };
@@ -1956,11 +2307,32 @@ fn make_client(
             .api_key
             .clone()
             .or_else(|| std::env::var("OPENAI_API_KEY").ok());
-        Arc::new(
+        let base: Arc<dyn ModelClient> = Arc::new(
             OpenAiClient::new(&args.base_url, args.model.clone(), api_key)?
                 .with_stream_usage(args.stream_usage)
-                .with_stream_idle_timeout(stream_idle_timeout(args))?,
-        )
+                .with_stream_idle_timeout(stream_idle_timeout(args))?
+                .with_http2(args.http2)?,
+        );
+        if args.prewarm > 0 {
+            // Beside the first planning call: not awaited.
+            let warm = base.clone();
+            let connections = args.prewarm;
+            tokio::spawn(async move {
+                let _ = warm.prewarm(connections).await;
+            });
+        }
+        if args.hedge_after_ms > 0 {
+            Arc::new(slimtoken::hedge::HedgeClient::new(
+                base,
+                slimtoken::hedge::HedgeConfig {
+                    after: Duration::from_millis(args.hedge_after_ms),
+                    max_hedges: args.hedge_max,
+                    ..Default::default()
+                },
+            ))
+        } else {
+            base
+        }
     };
     if let Some(path) = &args.record_to {
         return Ok(Arc::new(slimtoken::record::RecordingClient::new(
@@ -2057,11 +2429,77 @@ mod tests {
         assert_eq!(args.client.model, "custom", "explicit flag wins");
         assert_eq!(args.client.reasoning_effort.as_deref(), Some("none"));
         assert!(!preset.architect_schema);
-        assert_eq!(preset.cold_burst_cap, 16);
+        assert_eq!(preset.cold_burst_cap, 64);
         assert!(
             preset.single_response_threshold < 13_000,
             "finance goes to the wave"
         );
+    }
+
+    #[test]
+    fn check_cmd_keeps_test_cmd_as_an_alias_and_out_dir_is_off_by_default() {
+        let parse = |extra: &[&str]| {
+            let mut argv = vec!["slimtoken", "run", "--objective", "obj"];
+            argv.extend_from_slice(extra);
+            let Commands::Run(args) = Cli::parse_from(argv).command else {
+                panic!("run subcommand");
+            };
+            args
+        };
+        let plain = parse(&[]);
+        assert!(plain.scheduler.test_cmd.is_none() && plain.out_dir.is_none());
+        let old = parse(&["--test-cmd", "pytest -q"]);
+        assert_eq!(old.scheduler.test_cmd.as_deref(), Some("pytest -q"));
+        let new = parse(&["--check-cmd", "pytest -q", "--out-dir", "app"]);
+        assert_eq!(new.scheduler.test_cmd.as_deref(), Some("pytest -q"));
+        assert_eq!(new.out_dir.as_deref(), Some(std::path::Path::new("app")));
+        // Without --repair-rounds the check command runs the reconcile round.
+        assert_eq!(new.repair_rounds, 0);
+        let rounds = parse(&["--check-cmd", "gate", "--repair-rounds", "4"]);
+        assert_eq!(rounds.repair_rounds, 4);
+        // --repair-rounds without a check command is an error, not silently ignored.
+        assert!(Cli::try_parse_from([
+            "slimtoken",
+            "run",
+            "--objective",
+            "obj",
+            "--repair-rounds",
+            "4"
+        ])
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn repair_rounds_check_only_the_project_files() {
+        use slimtoken::check::{CheckMode, CheckResult, Checker};
+        use std::collections::BTreeMap;
+        use std::sync::Mutex;
+
+        struct Seen(Mutex<Vec<String>>);
+        #[async_trait::async_trait]
+        impl Checker for &Seen {
+            async fn check(
+                &self,
+                files: &BTreeMap<String, String>,
+                _: CheckMode,
+                _: &str,
+            ) -> Result<CheckResult> {
+                *self.0.lock().unwrap() = files.keys().cloned().collect();
+                Ok(CheckResult::default())
+            }
+        }
+        let seen = Seen(Mutex::new(Vec::new()));
+        let checker = ProjectFilesChecker {
+            inner: &seen,
+            skip: ["plan.md".to_string()].into_iter().collect(),
+        };
+        let files: BTreeMap<String, String> =
+            ["app/core.py", "Core types", "Final integration", "plan.md"]
+                .into_iter()
+                .map(|title| (title.to_string(), String::new()))
+                .collect();
+        checker.check(&files, CheckMode::Full, "").await.unwrap();
+        assert_eq!(*seen.0.lock().unwrap(), ["app/core.py"]);
     }
 
     #[test]
@@ -2133,6 +2571,35 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn manifest_pass_fills_the_cache_only_on_a_miss() {
+        let root = std::env::temp_dir().join(format!("slimtoken-save-{}", std::process::id()));
+        let cache = root.join("cache").join("key.json");
+        let manifest: slimtoken::architect::Manifest = serde_json::from_str(
+            r#"{"files":[{"path":"a.py","purpose":"core","exports":["def a() -> int"]}],"test_files":[],"readme":false}"#,
+        )
+        .unwrap();
+        let pretty = serde_json::to_vec_pretty(&manifest).unwrap();
+
+        // Miss: nothing cached, so the fresh manifest goes to the cache and
+        // to manifest.json.
+        assert!(cached_manifest(Some(&cache)).unwrap().is_none());
+        let fresh = root.join("fresh");
+        save_manifest(Some(&cache), &fresh, &manifest).unwrap();
+        assert_eq!(std::fs::read(&cache).unwrap(), pretty);
+        assert_eq!(std::fs::read(fresh.join("manifest.json")).unwrap(), pretty);
+
+        // Hit (or --manifest): the run passes no store, so only manifest.json
+        // is written and the cache keeps its bytes.
+        let hit = cached_manifest(Some(&cache)).unwrap().expect("cache hit");
+        std::fs::write(&cache, b"untouched").unwrap();
+        let replay = root.join("replay");
+        save_manifest(None, &replay, &hit).unwrap();
+        assert_eq!(std::fs::read(&cache).unwrap(), b"untouched");
+        assert_eq!(std::fs::read(replay.join("manifest.json")).unwrap(), pretty);
+        std::fs::remove_dir_all(root).ok();
+    }
+
     fn plan(edges: &[(&str, &[&str])]) -> Plan {
         Plan {
             cache_primes: Vec::new(),
@@ -2151,6 +2618,7 @@ mod tests {
                     static_output: None,
                     reasoning_effort: None,
                     internal: false,
+                    prefix_split: None,
                 })
                 .collect(),
         }

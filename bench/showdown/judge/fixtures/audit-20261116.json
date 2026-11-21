@@ -1,0 +1,513 @@
+{
+ "sample": "in-sample (tuning): the class-8 cross-file checklist of the working prompt, the delivery formula and the smoke flows were written from this audit's findings; its agreement measures fit, not generalisation. A held-out measure needs a new audit",
+ "source": "blind app-quality audit of 2026-11-16: 5 pairs (races 20261116-050156, -050458, -050810, -052814, -053134) x 2 lenses (coverage, working), one Claude agent per judgment with Read/Grep; X/Y are the audit's blind labels. score is the app as delivered (an app whose build fails scores near 0), score_if_built the app read as if it built; better / better_if_built likewise. problems: both lenses, file:line cited.",
+ "apps": "slimtoken-out-showdown/<run>/<arm> (or --apps DIR with DIR/<pair>/<label>)",
+ "pairs": [
+  {
+   "pair": "a1",
+   "run": "20261116-050156",
+   "objective": "taskflow",
+   "provider": "deepseek",
+   "X": "single",
+   "Y": "slimtoken",
+   "audit": {
+    "coverage": {
+     "better": "X",
+     "better_if_built": "X",
+     "margin": "clear",
+     "why": "X is better by a clear margin. Both apps reach every page and control the prompt lists. X wires all of them through one shared store that stays consistent, and its board moves record completion, so the dashboard and reports charts update correctly. Y has two serious problems a user will hit. First, its nav theme toggle saves a stale state snapshot loaded at startup, which erases any changes made since (components/AppShell.tsx:36-46). Second, its board moves never set completedAt (lib/board.ts:7), so the dashboard and reports ignore tasks completed on the board. Y also measures lead time instead of cycle time, has no unarchive, splits the stylesheet across several files and tests far fewer lib modules. Y's real advantages are drag-and-drop, task delete and a label catalog. These do not outweigh the data-loss bug and the wrong metrics.",
+     "X": {
+      "score": 88,
+      "score_if_built": 88,
+      "full": 30,
+      "partial": 3,
+      "missing": 0,
+      "broken": 0,
+      "wrong": 0,
+      "cosmetic": 1
+     },
+     "Y": {
+      "score": 72,
+      "score_if_built": 72,
+      "full": 25,
+      "partial": 6,
+      "missing": 0,
+      "broken": 1,
+      "wrong": 2,
+      "cosmetic": 1
+     }
+    },
+    "working": {
+     "better": "X",
+     "better_if_built": "X",
+     "margin": "clear",
+     "why": "X is clearly better for actual use: every page reads and writes one shared store, so edits persist and show up everywhere, and moving a task on the board feeds all the metrics. I found no data-loss or broken paths in X, only small issues: an empty title can be saved, comments always post as the first member, and the burndown counts every task.\n\nBoth apps build, and in each one every page has working controls.\n\nY has two serious defects:\n- **Silent data loss (components/AppShell.tsx:40-47):** the nav theme toggle saves the snapshot AppShell loaded at startup, wiping out everything the user changed since the app opened.\n- **Board moves don't count as completions (lib/board.ts:7):** moving a task to Done on the board does not set completedAt, so Completed this week, velocity, cycle time and burndown never reflect board work, and tasks moved out of Done still count as completed.\n\nY also has smaller real bugs: subtask toggles discard unsaved edits on the detail form, the calendar's today uses the UTC date, the burndown repeats a date across DST, and archived projects cannot be unarchived.",
+     "X": {
+      "score": 87,
+      "score_if_built": 87,
+      "full": 9,
+      "partial": 0,
+      "missing": 0,
+      "broken": 0,
+      "wrong": 3,
+      "cosmetic": 3
+     },
+     "Y": {
+      "score": 60,
+      "score_if_built": 60,
+      "full": 6,
+      "partial": 3,
+      "missing": 0,
+      "broken": 1,
+      "wrong": 5,
+      "cosmetic": 4
+     }
+    }
+   },
+   "problems": {
+    "X": [
+     "Board moves tasks with left/right arrow buttons only, no drag (app/board/page.tsx:140-155). The prompt only says 'move tasks between columns', so this still counts, but it is the weaker interaction",
+     "Subtask logic sits inside lib/tasks.ts (addSubtask/toggleSubtask/removeSubtask) rather than its own subtasks module. Coverage is the same, but the module split asked for in the prompt is not followed",
+     "Tests cover 10 lib modules (lib/*.test.ts) but not projects, comments, labels, storage or id",
+     "Comments are always written as data.members[0] with no author choice (app/tasks/[id]/page.tsx:89)",
+     "Search is reached only through the top-bar form (components/AppShell.tsx:60) and has no sidebar nav entry, though it works globally",
+     "app/tasks/[id]/page.tsx:144 - the title input saves on every keystroke with no validation (lib/tasks.ts:37 updateTask accepts ''). Clearing the field saves an empty title, so the board card link has no text.",
+     "app/tasks/[id]/page.tsx:91 - every comment is posted as data.members[0] (Alice Chen). There is no author picker, so comments always show the wrong person.",
+     "app/board/page.tsx:27 - projectId is useState seeded once from ?project= or the default. A client navigation to /board?project=other while already on the board does not switch the project.",
+     "lib/burndown.ts:13 - total and remaining count every task, including tasks created after a given day and tasks in archived projects, so the start of the burndown curve is too high.",
+     "app/settings/page.tsx:63 and app/board/page.tsx:84 - archived projects can be picked as the default project. The board shows them with an '(archived)' suffix, which is minor.",
+     "app/board/page.tsx:60 - the New task modal only takes a title and a column. Priority, assignee and due date have to be set afterwards on the detail page, which works but is clunky."
+    ],
+    "Y": [
+     "Data loss: AppShell keeps its own copy of state, loaded once at mount (components/AppShell.tsx:26-31). The nav theme toggle saves that stale copy (AppShell.tsx:36-46), which overwrites any tasks, projects or comments changed on other pages since the app loaded",
+     "Board moves do not record completion: lib/board.ts:7 moveTask only changes status and never sets completedAt. A task dragged or selected into Done on the board does not show up in 'completed this week', burndown, velocity or cycle time (app/board/page.tsx:154)",
+     "Cycle time is measured from createdAt to completedAt because there is no startedAt field (lib/cycle.ts:18-23). That is lead time, not cycle time",
+     "There is no unarchive, and archived projects stay in the list with a disabled Archive button (app/projects/page.tsx:132-139)",
+     "The activity feed is derived only from created/completed timestamps (lib/dashboard.ts:40-82). Edits, moves and comments-as-actions are not tracked",
+     "Changing the theme in Settings does not update AppShell's toggle label or its state, so the two copies drift (app/settings/page.tsx:39 vs components/AppShell.tsx)",
+     "Styles are split over globals.css plus 3 imported part files (app/globals.css), not the single global stylesheet the prompt asked for",
+     "Tests (tests/01-06) cover types, seed, board, labels, burndown and search only. There are no tests for velocity, cycle, csv, calendar, team, tasks, projects, subtasks, comments, dates or storage",
+     "Each page reloads localStorage on its own with no shared store, so state is not kept in sync across components",
+     "components/AppShell.tsx:28-47 - AppShell is in the root layout, so it stays mounted. It loads its own state snapshot once and saveState({...staleState, theme}) when the nav theme button is clicked. Every task move, edit, comment, new project or Reset made since the app opened is overwritten with the old data, so the user silently loses their work.",
+     "lib/board.ts:7 - moveTask only changes status and never sets or clears completedAt, and the board uses it for both the select and drag-drop (app/board/page.tsx:154). Tasks moved to Done on the board never count toward 'Completed this week', velocity, cycle time or burndown, and never appear in the activity feed. Seed tasks moved out of Done keep their completedAt, so burndown and velocity still count them as completed.",
+     "components/AppShell.tsx:34 and app/settings/page.tsx:39 - the Settings page and AppShell keep separate copies of the theme. After the theme is changed in Settings, the nav button label is stale, and clicking it 'toggles' to the theme that is already set while also writing the stale data back.",
+     "app/tasks/[id]/page.tsx:28-36 - the edit form resets its fields from the task whenever the task object changes. Toggling, adding or removing a subtask before pressing Save throws away unsaved edits to title, description and other fields.",
+     "lib/burndown.ts:22 - days are stepped with start + i*DAY_MS. Across a DST change (today's 14-day window includes the Nov 2 fall-back), two points get the same date label, which also gives duplicate React keys at app/page.tsx:74, and today's point is dropped.",
+     "app/calendar/page.tsx:182 - 'today' is new Date().toISOString().slice(0,10), which is the UTC date. In the evening in a western timezone the highlight lands on tomorrow. lib/seed.ts:14 dueIn uses the same UTC date, so seeded due dates and overdue counts can be off by a day.",
+     "lib/burndown.ts:17 - every task counts toward the total and the remaining count, whatever its creation date or project.",
+     "app/projects/page.tsx:132-139 - archived projects cannot be unarchived.",
+     "lib/dashboard.ts:40 - the activity feed is rebuilt from created and completed timestamps, so moves, edits and board completions (which have no completedAt) never appear.",
+     "app/styles/part2.css - the priority badge classes (badge-urgent and the others used at app/board/page.tsx:14) are not defined, so priority badges are unstyled. The stylesheet is also split into 3 files where the prompt asked for one."
+    ]
+   }
+  },
+  {
+   "pair": "a2",
+   "run": "20261116-050458",
+   "objective": "ledgerly",
+   "provider": "deepseek",
+   "X": "slimtoken",
+   "Y": "single",
+   "audit": {
+    "coverage": {
+     "better": "X",
+     "better_if_built": "Y",
+     "margin": "large",
+     "why": "As delivered, X wins by a large margin, because Y's `next build` fails at components/BarChart.tsx:17 (Math.abs on an object instead of on v.value), so a user gets nothing from Y. X builds and serves every page, and most requirements are reachable. But X has a core defect: lib/transactions.ts:15 rejects negative amounts, while expenses are stored and submitted as negative numbers. As a result, adding any expense fails, editing seeded expenses fails (and throws uncaught on the detail page), and splitting an expense is impossible. On top of that, X's recurring frequency selector does nothing, new recurring bills are saved as income, the theme is applied only on two pages, and its tests skip most lib modules. If that one-token build error were fixed, Y would clearly be the better app. Its signed-amount model is consistent, transaction add, edit, split and delete all work, mark paid creates a transaction, the theme is applied globally, and it has 13 lib test files. Y's remaining gaps are smaller: monthStartDay is unused, rollover covers only one month and a dead rolloverFor stub remains, the per-month report shows one month at a time, and edit and delete are reached only through the detail page.",
+     "X": {
+      "score": 60,
+      "score_if_built": 60,
+      "full": 17,
+      "partial": 9,
+      "missing": 0,
+      "broken": 3,
+      "wrong": 4,
+      "cosmetic": 2
+     },
+     "Y": {
+      "score": 10,
+      "score_if_built": 84,
+      "full": 22,
+      "partial": 4,
+      "missing": 0,
+      "broken": 1,
+      "wrong": 2,
+      "cosmetic": 2
+     }
+    },
+    "working": {
+     "better": "X",
+     "better_if_built": "Y",
+     "margin": "large",
+     "why": "X is the better app as delivered, by a large margin, because Y does not run: `next build` fails at components/BarChart.tsx:17 (Math.abs is passed an object instead of v.value), so no page of Y can be served. X builds and serves all 8 pages, and accounts, budgets, goals, reports, settings and the charts work from real stored data. But X's core transaction flow is broken: lib/transactions.ts:14 rejects negative amounts, while the form stores expenses as negative. Adding an expense, editing any expense (even only its payee or notes) and splitting an expense all fail, and on the detail page the save throws an uncaught error. X also has double-counted seed balances (seed.ts:64), so net worth is wrong. Its recurring next due date never advances after Mark paid and ignores frequency, and new bills are stored as income. If the one-line BarChart fix were applied, Y would clearly be better: adding, editing, splitting and deleting transactions all work, Mark paid creates a transaction and advances the due date, and budgets with rollover, goals, reports with CSV export, and theme all work. Y's remaining problems are smaller: the split input is hard to type in, the transfer is counted as both income and spending, future-dated seed transactions appear this month, the month-start setting is unused, and recurring items cannot be created.",
+     "X": {
+      "score": 52,
+      "score_if_built": 52,
+      "full": 4,
+      "partial": 4,
+      "missing": 0,
+      "broken": 4,
+      "wrong": 5,
+      "cosmetic": 2
+     },
+     "Y": {
+      "score": 5,
+      "score_if_built": 76,
+      "full": 7,
+      "partial": 2,
+      "missing": 0,
+      "broken": 2,
+      "wrong": 4,
+      "cosmetic": 2
+     }
+    }
+   },
+   "problems": {
+    "X": [
+     "lib/transactions.ts:10-17 assertAmount throws on any negative amount, but components/TransactionForm.tsx:68 sends expenses as -magnitude and lib/seed.ts stores every expense as a negative number. Adding an expense on /transactions fails with 'amount must not be negative' (app/transactions/page.tsx:53-64). Only income can be added.",
+     "Editing any seeded expense (almost every transaction) fails for the same reason: app/transactions/page.tsx:67 catches the error and shows it. On the detail page, app/transactions/[id]/page.tsx:62-66 handleSave calls updateTransaction with no try/catch, so the throw is uncaught and nothing is saved.",
+     "Splitting an expense is impossible: lib/transactions.ts:66 requires sum(splits) === tx.amount, while app/transactions/[id]/page.tsx:96-99 only accepts positive split amounts. For a negative transaction the check always fails, so splits work only on income.",
+     "app/recurring/page.tsx:34 frequencyOf always returns 'monthly', and the Recurring type has no frequency field. The Weekly/Yearly selector is a dead control.",
+     "The recurring form forces a positive amount (lib/recurring.ts:73, app/recurring/page.tsx:99). New bills are saved as positive and show up as 'Income'. Editing a seeded bill (negative amount) throws 'amount must be positive'.",
+     "Mark paid (app/recurring/page.tsx:37) is a local helper outside lib. It only stamps lastPaid and creates no transaction.",
+     "Theme is applied to document only in app/budgets/page.tsx:54 and app/settings/page.tsx:15, not in the layout or provider. After a reload on any other page, the dark theme is not applied.",
+     "Settings monthStartDay is only displayed as a date range on budgets (app/budgets/page.tsx:45). It does not affect any budget or spending calculation.",
+     "lib/cashflow.ts:31-34 counts the positive 'other' savings transfer as spending, which inflates the overview spending figures.",
+     "Tests cover only types, ids, categories, goals, csv and storage (tests/01-06). There are none for money, transactions/splits, budgets/rollover, recurring, filters, cashflow or reports, and the negative-amount bug went uncaught.",
+     "Budgets prev/next use plain <a href> and force full page reloads (app/budgets/page.tsx:120-133). It works, but it is crude.",
+     "BROKEN lib/transactions.ts:14-16: assertAmount throws on negative amounts, but components/TransactionForm.tsx:65 sends expenses as -magnitude and every seeded expense is negative. On the Transactions page, adding any expense shows 'amount must not be negative' and nothing is saved. Editing any existing expense, even just its payee, notes or tags, fails the same way (app/transactions/page.tsx:67-78). Only income can be added or edited.",
+     "BROKEN app/transactions/[id]/page.tsx:63-66: handleSave calls updateTransaction with no try/catch. Saving an expense on the detail page throws an uncaught error, shows no message and saves nothing.",
+     "BROKEN splits on expenses: app/transactions/[id]/page.tsx:96-101 forces split rows to be positive, but lib/transactions.ts:68 requires their sum to equal tx.amount, which is negative for an expense. 'Save splits' always fails with 'split amounts must equal transaction amount'. The second split UI in TransactionForm goes through updateTransaction and hits the negative-amount throw.",
+     "BROKEN components/TransactionForm.tsx:224: the split amount input is controlled as centsToInput(split.amount) and reformatted on every keystroke. Typing '1' then '2' shows '1.00' then '1.002', which parses back to 1.00, so multi-digit split amounts are very hard to enter.",
+     "WRONG lib/seed.ts:64-69: seedAccounts sets openingBalance to opening plus the sum of the seed transactions, and lib/accounts.ts:43-48 and lib/cashflow.ts:61-71 add the transactions again. Every account balance and the net worth count 12 months of activity twice.",
+     "WRONG lib/recurring.ts:134-145: nextDue ignores lastPaid and frequency. app/recurring/page.tsx:33-35 frequencyOf always returns 'monthly', and frequency is never stored. 'Mark paid' (page:37-43,145-153) only writes lastPaid; the next due date never advances and no transaction is recorded.",
+     "WRONG app/recurring/page.tsx:97-98: amounts are forced positive, so any bill added through the form is stored as positive and tagged 'Income' (components/RecurringList.tsx:53).",
+     "WRONG Overview and Reports disagree. lib/cashflow.ts:32-35,46-50 counts the +$500 savings transfer (category 'other', a positive amount) as spending via Math.abs, while lib/reports.ts:58-62 counts it as income by sign. The Overview donut (cashflow.ts:73-90) also ignores splits, while Reports honors them.",
+     "WRONG app/budgets/page.tsx:45,134: monthStartDay only changes the date range shown on screen. Spent amounts still use calendar months (lib/budgets.ts:98), so the 'first day of month' setting has no effect on budget figures.",
+     "COSMETIC theme: data-theme is set only in useEffects on the Budgets (budgets/page.tsx:53-55) and Settings (settings/page.tsx:13-15) pages. Reloading any other page with dark mode saved renders light until one of those pages is visited.",
+     "COSMETIC app/accounts/page.tsx:16-20 and app/recurring/page.tsx:58-62 re-read localStorage on mount and replace the context state. It works, but data is reloaded twice."
+    ],
+    "Y": [
+     "`next build` fails at components/BarChart.tsx:17. `g.values.map((v) => Math.abs(v))` passes an object to Math.abs and should be `v.value`. As delivered, no page can be served, so none of the features below reach a user.",
+     "The transactions list has no inline edit or delete (app/transactions/page.tsx). Edit and delete are reachable only by clicking a payee to open the detail page (app/transactions/[id]/page.tsx:88-110).",
+     "Settings monthStartDay is stored (app/settings/page.tsx:40-42) but no lib or page reads it. That requirement is effectively decorative.",
+     "lib/budgets.ts:51-59 rolloverFor is a dead stub that always returns 0. It is unused (computeBudgetProgress does the real rollover), but it is the kind of stub the prompt forbids.",
+     "Rollover only carries over from the immediately previous month, and only when a budget existed there (lib/budgets.ts:76-84). Because seed budgets exist only for the current month, rollover shows nothing until the user sets budgets in earlier months.",
+     "Reports 'spending by category per month' is a single-month table browsed with arrows (app/reports/page.tsx:52-118), not a multi-month view. Income vs expenses covers only 6 months.",
+     "Internal transfers in the seed (lib/seed.ts:86-87) count as both income and expense in the cash flow.",
+     "BarChart uses viewBox 0 0 100 h with preserveAspectRatio=none (components/BarChart.tsx:22), so the label text is stretched (cosmetic).",
+     "Recurring items cannot be created, edited or deleted. The prompt does not ask for this; only mark paid and pause/resume are provided.",
+     "BROKEN (build) components/BarChart.tsx:17: Math.abs(v) is passed a {value,color} object instead of v.value. `next build` fails the type check, so as delivered no page can be served and nothing works. The one-line fix is Math.abs(v.value).",
+     "BROKEN-ish app/transactions/[id]/page.tsx:203-208: the split amount input is controlled as (s.amount/100).toFixed(2) and reformatted on every keystroke. Typing '1','2' gives '1.00' then '1.002', which parses back to 1.00, so multi-digit split amounts are very hard to enter. This is the only split UI.",
+     "WRONG lib/seed.ts:69-91: the current month is seeded with transactions on days 1-27 even when those days are still in the future. 'Spending this month' and 'Latest transactions' include future-dated items.",
+     "WRONG lib/cashflow.ts:12-21 and lib/reports.ts:40-50: the checking-to-savings transfer pair (seed.ts:86-87) is counted as $500 of income and $500 of expenses every month, inflating both totals. The spending donut also shows 'Other' $500.",
+     "WRONG lib/budgets.ts: the monthStartDay setting (app/settings/page.tsx:38-49) is saved but never used anywhere. rolloverFor (lines 51-60) is dead code that always returns 0. computeBudgetProgress carries over only one month of positive leftover and ignores deeper history.",
+     "WRONG lib/recurring.ts:6-15: after 'Mark paid' the schedule re-anchors on the payment date (lastPaidDate + 1 period), not the due date, so paying early or late makes the schedule drift.",
+     "MISSING app/recurring/page.tsx: recurring items cannot be created, edited or deleted, only marked paid or paused. app/transactions/page.tsx has no inline edit or delete; both are only on the detail page.",
+     "COSMETIC components/BarChart.tsx:22,49: viewBox width 100 with preserveAspectRatio='none' stretches the fontSize-3 month labels horizontally."
+    ]
+   }
+  },
+  {
+   "pair": "a3",
+   "run": "20261116-050810",
+   "objective": "taskflow",
+   "provider": "deepseek",
+   "X": "slimtoken",
+   "Y": "single",
+   "audit": {
+    "coverage": {
+     "better": "Y",
+     "better_if_built": "Y",
+     "margin": "clear",
+     "why": "Both apps build and have every page and nearly every listed control. X shows wrong numbers on four of the prompt's headline analytics features. Its metrics code only parses date-only strings, but the app stores full ISO timestamps. As a result, completed-this-week is always 0, the burndown is a flat line, velocity is all zeros and cycle time shows no data, and the tests miss this because they feed date-only strings. X also has no real activity log, and its task editor can write stale seed values back over your edits after a reload. X does offer more on the board: drag-and-drop and a create-task form. Y's coverage is correct throughout: real activity feed, correct burndown/velocity/cycle time, archive and unarchive, and labels, subtasks and comments all wired up. Its gaps are that tasks cannot be created and the board has no drag-and-drop (moves go through a select). Overall Y covers the prompt more completely and correctly.",
+     "X": {
+      "score": 60,
+      "score_if_built": 60,
+      "full": 30,
+      "partial": 3,
+      "missing": 0,
+      "broken": 4,
+      "wrong": 3,
+      "cosmetic": 3
+     },
+     "Y": {
+      "score": 85,
+      "score_if_built": 85,
+      "full": 35,
+      "partial": 2,
+      "missing": 0,
+      "broken": 0,
+      "wrong": 1,
+      "cosmetic": 2
+     }
+    },
+    "working": {
+     "better": "Y",
+     "better_if_built": "Y",
+     "margin": "large",
+     "why": "Both apps build. Y is the better app by a large margin. In X, every metric is silently broken because parseDate rejects full ISO timestamps (lib/metrics.ts:4-20): 'Completed this week' is always 0, the burndown is flat, velocity is all zeros and cycle time is 0. X also has five crash paths where a lib function throws inside a setState updater (empty project name, empty task title on Save, empty subtask, empty comment, whitespace-only new task). And its task editor shows stale seed values after a reload, so pressing Save overwrites the user's stored edits. Y's data flow is sound: the provider waits for storage before rendering, completedAt is maintained on every status change, charts come from real timestamps, and empty inputs are guarded. Y's main gap is that the UI has no way to create a task, plus a burndown that ignores creation dates. That is serious, but it is less damaging than X's broken dashboard and reports plus its crash paths.",
+     "X": {
+      "score": 38,
+      "score_if_built": 38,
+      "full": 5,
+      "partial": 3,
+      "missing": 0,
+      "broken": 3,
+      "wrong": 3,
+      "cosmetic": 3
+     },
+     "Y": {
+      "score": 78,
+      "score_if_built": 78,
+      "full": 8,
+      "partial": 1,
+      "missing": 1,
+      "broken": 0,
+      "wrong": 2,
+      "cosmetic": 4
+     }
+    }
+   },
+   "problems": {
+    "X": [
+     "lib/metrics.ts:14-21,63-67,116-122 run every createdAt/completedAt through parseDate (lib/dates.ts:1-9), which only accepts YYYY-MM-DD. The app always stores full ISO timestamps (lib/seed.ts:3-8, lib/tasks.ts:29-30,51), so parseDate throws and the code silently falls back. With real data, 'Completed this week' on the Dashboard is always 0 (app/page.tsx:26).",
+     "Same root cause: the burndown chart (app/page.tsx:37, lib/metrics.ts:53-82) never sees a completion, so it draws a flat line at the total task count.",
+     "Same root cause: Reports velocity (lib/metrics.ts:84-106) shows 0 for every week, and cycle-time stats (lib/metrics.ts:108-131) show count 0, avg 0.0, median 0.0. The tests (tests/05_calendar.test.ts:65,87,110-117) only pass date-only strings, which hides the bug.",
+     "lib/board.ts:3-5: moveTask changes status but never sets or clears completedAt. Tasks finished on the board have no completion time, so the metrics fall back to dueDate.",
+     "app/tasks/[id]/page.tsx:20-25: the editor seeds its useState from the store's first render, which is seedState() (lib/store.tsx:22) and not localStorage. On a reload or direct load of a seed task you edited earlier, the form shows the original seed values, and pressing Save writes them back over your edits.",
+     "app/page.tsx:127-155: the recent activity feed is built from task created/completed timestamps, with no real activity log. Every unfinished task is labelled 'updated'.",
+     "lib/labels.ts:3-9 leaves out 'chore', which seed tasks t5/t9 use (lib/seed.ts:37,41). That label disappears from the task detail and from the CSV.",
+     "app/search/page.tsx:131-135: comment results show the raw author id (e.g. m1) instead of the member's name.",
+     "Styles are split across three files imported by globals.css (app/styles/part1-3.css), which loosens the one-global-stylesheet rule. The layout also nests app-shell inside app-shell (app/layout.tsx:16 plus every page).",
+     "lib/metrics.ts:4-20 (dayStart/completedDate) call parseDate (lib/dates.ts:1-10), which only accepts 'YYYY-MM-DD'. But completedAt and createdAt are full ISO timestamps (seed.ts:7, tasks.ts:29-30, tasks.ts:50), so completedDate() returns null for every completed task and createdAt always falls back. Effect: the dashboard 'Completed This Week' card is always 0, the burndown (page.tsx:37) is a flat line at the total task count, every velocity bar is 0 (reports/page.tsx:131), and cycle time shows 0.0 / 0.0 / 0 measured. Four required metrics are broken, and no test covers metrics.ts.",
+     "lib/board.ts:3-5 moveTask changes only the status and leaves completedAt alone. A task dragged to Done keeps completedAt=null, so the metrics fall back to its dueDate (the wrong completion day, or nothing when the due date is ''). A task moved out of Done keeps its stale completedAt.",
+     "Crash paths: lib functions throw inside the setState updater, and React runs that updater during render, so the surrounding try/catch never catches the error and the app crashes with an unhandled client exception. Triggers: an empty project name on Create (projects/page.tsx:104, and the input at :135 has no 'required'); clearing the title and pressing Save on task detail (tasks/[id]/page.tsx:32-42, tasks.ts:40-41); 'Add subtask' with an empty input (tasks/[id]/page.tsx:199-200); 'Add comment' with an empty body (:276); a whitespace-only title in Board > New task (board/page.tsx:145-155).",
+     "Stale editor after reload: store.tsx:22 renders seedState() first and loads localStorage in an effect. TaskEditor fills its useState from that first render (tasks/[id]/page.tsx:20-25) and never re-syncs. Effect: if you edit a seeded task and then reload /tasks/<id>, the form shows the original seed values while the h1 shows the saved title, and pressing Save writes the stale seed values back over the user's edits.",
+     "Every page shows seed data first and then flips to the stored data after a reload (store.tsx:22-30), so the user sees a flash of wrong counts and charts.",
+     "projects/page.tsx:137-145 has a Description input, but createProject (lib/projects.ts:4-13) throws the description away.",
+     "search/page.tsx:126-131: comment results show the raw author id ('m1') instead of the member's name.",
+     "The seed uses a 'chore' label (seed.ts:41,45) that is missing from lib/labels.ts LABELS, so task detail never shows it and it cannot be toggled.",
+     "An archived project cannot be unarchived and stays in the projects list with only a badge. The 'recent activity' feed is just tasks sorted by created/completed time, so moves and edits never appear."
+    ],
+    "Y": [
+     "Tasks cannot be created anywhere in the UI. lib/tasks.ts:16 createTask is never called from app/ or components/, so users can only edit the 15 seed tasks. The prompt does not list create-task explicitly, but the tasks lib is only partly wired.",
+     "The board has no drag-and-drop. Moving between columns works only through the per-card select (app/board/page.tsx:105-115). This meets 'move tasks between columns' but is less than a kanban user expects.",
+     "lib/burndown.ts:30 counts every task in every point, including tasks created after that day, so the start of the series is inflated. The isFuture branch is a no-op (both arms are identical).",
+     "app/tasks/[id]/page.tsx:83: the title saves on every keystroke with no empty-title guard, so a task can end up with a blank title.",
+     "Settings 'None' default project falls back correctly, but an archived default project still opens on the board (app/board/page.tsx:17-22).",
+     "There is no way to create a task anywhere in the UI. lib/tasks.ts:16 createTask is never imported by any page or component, so users can only edit, move or delete the seeded tasks. That is a large gap for a project management app.",
+     "lib/burndown.ts:27-33 computes remaining as tasks.length minus completed and ignores createdAt, so tasks created later count as remaining on days before they existed. The isFuture ternary has two identical branches, so it does nothing.",
+     "board/page.tsx:24: the project is held in useState(initialProject) and is not synced to later ?project= changes. The selector does not update the URL either.",
+     "tasks/[id]/page.tsx:87: the title saves on every keystroke and can be cleared to an empty string, leaving an empty h1 and blank cards.",
+     "CSV filename uses the UTC date (reports/page.tsx:32), and escapeCell does not quote a bare \\r (lib/csv.ts:5). Both are minor.",
+     "Edits and status changes made on task detail are not added to the activity feed; only board moves, comments and project actions are."
+    ]
+   }
+  },
+  {
+   "pair": "a4",
+   "run": "20261116-052814",
+   "objective": "ledgerly",
+   "provider": "deepseek",
+   "X": "single",
+   "Y": "slimtoken",
+   "audit": {
+    "coverage": {
+     "better": "X",
+     "better_if_built": "X",
+     "margin": "large",
+     "why": "Both apps build and include every page. X wires every listed control end to end and keeps a consistent sign convention, so add, edit, split and mark-paid all produce correct balances, budgets and reports. Its gaps are small: the month-start setting is ignored, rollover looks back only one month, and the split amount input is awkward to type into. Y has the same surface, but several core flows are broken or wrong. Mark paid throws for every bill (recurring/page.tsx:242 vs transactions.ts:22). Every user-added expense is stored as income (transactions/page.tsx:174). Editing any seeded expense flips it to income ([id]/page.tsx:279,306). Rollover ignores spending (budgets.ts:30-47). On top of that, the table shows raw account ids and is hardcoded to USD, and the nav renders twice. Y's one real edge is that budgets honour the month-start day, which does not offset these failures in the main add, edit and pay flows.",
+     "X": {
+      "score": 85,
+      "score_if_built": 85,
+      "full": 40,
+      "partial": 4,
+      "missing": 0,
+      "broken": 0,
+      "wrong": 2,
+      "cosmetic": 2
+     },
+     "Y": {
+      "score": 52,
+      "score_if_built": 52,
+      "full": 27,
+      "partial": 9,
+      "missing": 1,
+      "broken": 3,
+      "wrong": 4,
+      "cosmetic": 3
+     }
+    },
+    "working": {
+     "better": "X",
+     "better_if_built": "X",
+     "margin": "large",
+     "why": "X is clearly better: it actually works for normal day-to-day use. One shared context saves every change to localStorage, money is stored as signed cents everywhere, and every control traced through to correct state and storage changes. Its real defects are smaller:\n- the month-start setting is ignored;\n- the seeded savings transfer is filed under Salary, so it inflates income and adds a Salary slice to the spending donut;\n- split amounts are awkward to type;\n- rollover covers only one month back.\n\nY breaks the core finance loop:\n- new transactions must be positive, so every one counts as income and you cannot record an expense;\n- editing any expense silently turns it into income;\n- Mark paid throws an error for every bill;\n- the next due date never advances after marking paid;\n- budget rollover adds up past limits without subtracting spending;\n- the nav bar appears twice on every page;\n- the transactions table shows raw account ids and always formats in USD.\n\nY's only edge is that it applies the month-start setting to budgets.",
+     "X": {
+      "score": 80,
+      "score_if_built": 80,
+      "full": 8,
+      "partial": 1,
+      "missing": 0,
+      "broken": 1,
+      "wrong": 3,
+      "cosmetic": 3
+     },
+     "Y": {
+      "score": 33,
+      "score_if_built": 33,
+      "full": 3,
+      "partial": 4,
+      "missing": 1,
+      "broken": 4,
+      "wrong": 5,
+      "cosmetic": 4
+     }
+    }
+   },
+   "problems": {
+    "X": [
+     "Settings 'first day of the month for budgets' is saved (src/app/settings/page.tsx:39-48) but never read anywhere: grep finds monthStartDay only in types.ts:75, seed.ts:160 and settings page. Budgets and spentInCategory (src/lib/budgets.ts:11-24) always use calendar months.",
+     "Rollover only looks back one month (src/lib/budgets.ts:35-47, rolloverFor uses only addMonthsToKey(month,-1)), so unspent money does not carry over more than one month. Budgets are seeded only for the current month (seed.ts:99-107), so no rollover shows until the user sets budgets for later months.",
+     "The split amount input is controlled and reformatted on every keystroke (src/components/TransactionForm.tsx:163-168, value=(s.amount/100).toFixed(2)), so typing multi-digit amounts is awkward. It still works if you paste or move the cursor.",
+     "Splits, search and filters have no lib modules of their own: they are folded into src/lib/transactions.ts. src/components/LineChart.tsx is never used.",
+     "Transaction edit and delete are reached only through the detail page (payee link in src/app/transactions/page.tsx:147), not from the table row. This works but takes an extra click.",
+     "src/app/settings/page.tsx:39-48 + src/lib/budgets.ts:9-23: the 'first day of the month for budgets' setting is saved but never read. Budgets always use calendar months (t.date.startsWith(month)), and monthRange in date.ts:118 is never called. Changing the setting does nothing (broken)",
+     "src/lib/seed.ts:75-76: the savings transfer is seeded as category cat_salary (-500 checking / +500 savings). Overview 'Income this month' and the Reports/cash-flow income are inflated by $500 a month, and spendingByCategory (transactions.ts:122-145) adds a 'Salary $500' slice to the spending donut and its legend (wrong)",
+     "src/components/TransactionForm.tsx:163-168: the split amount input is a controlled value reformatted with toFixed(2) on every keystroke. Typing after the decimal or deleting characters snaps back (e.g. backspace on '4.00' gives '4.00' again), so split amounts are hard to enter (wrong usability)",
+     "src/lib/budgets.ts:35-47: rollover carries only the previous month's base budget minus its spending. It ignores the rollover that month itself received, so unspent money does not accumulate over several months (wrong)",
+     "src/lib/recurring.ts:4-17: when lastPaidDate is null, past-due occurrences are skipped silently (the loop advances past today), so an unpaid bill from earlier this month never shows as overdue (cosmetic/minor)",
+     "src/components/TransactionForm.tsx:37: the default date uses new Date().toISOString().slice(0,10), the UTC date, so it can be off by one day near midnight in non-UTC zones (cosmetic)",
+     "src/app/transactions/page.tsx:143-170: the table has no delete control; delete exists only on the detail page (cosmetic/acceptable)"
+    ],
+    "Y": [
+     "Mark paid fails for every bill. app/recurring/page.tsx:242 makes the amount negative for non-income items, then calls addTransaction, which throws 'amountCents must be a positive integer' (lib/transactions.ts:10-14,22). Rent, Electric and StreamFlix (3 of the 4 seeded items) all show an error instead of being paid. Even when it works, the next due date does not move forward from lastPaid on its own, because dueAfter(item, today) is used.",
+     "Add transaction only accepts positive amounts and has no expense/income toggle (app/transactions/page.tsx:173-176; lib/transactions.ts:22). Every expense a user adds is stored as a positive number. It raises the account balance and is counted as income by isIncome = amountCents>0 (lib/reports.ts:4-6, lib/cashflow.ts:28-30, budgets page:50), so it never appears in spending or budgets.",
+     "Editing a seeded expense flips it to income. The detail form shows Math.abs (app/transactions/[id]/page.tsx:279), requires amount > 0 (line 306) and saves the positive value through updateTransaction, which asserts positive amounts (lib/transactions.ts:42-44). Saving any expense, even just to change a note, corrupts balances and reports.",
+     "Rollover is computed wrong. lib/budgets.ts:30-47 adds up the limits of every earlier month and never subtracts spending, so 'rollover of unspent amounts' shows the full previous limit even when it was overspent.",
+     "The transactions table shows the raw account id instead of the account name and always formats in USD, ignoring the currency setting (components/TransactionTable.tsx:482-483).",
+     "The nav renders twice on every page: app/layout.tsx:14 wraps children in AppShell, and every page wraps itself in AppShell again (e.g. app/page.tsx:256, app/accounts/page.tsx:602).",
+     "Reports show spending by category for one selected month at a time, not a per-month breakdown, and the CSV export covers only the selected month rather than all transactions (app/reports/page.tsx:548).",
+     "Splitting a seeded (negative) expense needs negative part amounts, because the parts must sum to the negative amountCents (app/transactions/[id]/page.tsx:396,426). This is confusing, but it does work.",
+     "Categories are a fixed constant (lib/types.ts:24), so no category management exists, which is fine. lib/store.ts duplicates storage.ts and is imported by nothing (dead code).",
+     "The 'one global stylesheet' is split into 3 files that globals.css @imports. Accounts cannot be reopened, which is minor and not required.",
+     "lib/transactions.ts:10-14,22 + app/transactions/page.tsx:173-188: addTransaction rejects anything that is not a positive amount and the form accepts only amounts > 0. Every new transaction is stored as positive, so isIncome (cashflow.ts:28, reports.ts:4) counts it as income and it raises the account balance. You cannot record an expense: a $50 grocery purchase adds $50 to income and never reaches spending or budgets (broken)",
+     "app/transactions/[id]/page.tsx:36,62-74 + lib/transactions.ts:42-44: the edit form shows abs(amount) and saves it as a positive amountCents. Saving any seeded expense, even after changing only the notes, flips it to income, which raises the balance and drops it from spending and budgets (broken)",
+     "app/recurring/page.tsx:242-254: Mark paid builds txAmount = -abs(amount) for bills and passes it to addTransaction, which throws 'amountCents must be a positive integer'. Mark paid fails with an error for every bill (rent, electric, StreamFlix); only Salary works (broken)",
+     "lib/recurring.ts:56-62,64-94: the next due date comes from a fixed anchor or dayOfMonth relative to today. Setting lastPaid on mark-paid does not move it forward, so after marking an item paid its next due date stays the same (broken)",
+     "lib/budgets.ts:30-47: rollover adds up the limits of all earlier budgeted months and never subtracts what was spent. Next month's rollover is the whole of this month's limit even if it was overspent (wrong)",
+     "app/layout.tsx:14 wraps children in AppShell, and every page wraps itself in AppShell again (e.g. app/page.tsx:68, accounts/page.tsx:230), so the nav bar renders twice on every page (wrong/visible)",
+     "components/TransactionTable.tsx:62,68-69: the transactions table shows the raw account id ('acc_checking') instead of the name, and formats amounts with hard-coded 'USD', ignoring the currency setting (wrong)",
+     "app/reports/page.tsx:33,136-141: 'spending by category per month' shows one selected month only (no month-by-category breakdown), and CSV export covers only the selected month, not all transactions (partial)",
+     "app/transactions/[id]/page.tsx:150-154,183: the split editor pre-fills the negative transaction amount and requires parts to sum to the signed total, so the user has to type negative split amounts (wrong usability)",
+     "lib/date.ts:56: monthRange gives an end of 'YYYY-MM-00' for start day 1, which the Budgets page shows as 'Budget period: 2026-11-01 to 2026-12-00' (cosmetic)",
+     "app/budgets/page.tsx:77: an 'Income' budget row appears among the expense budgets (cosmetic)",
+     "components/BarChart.tsx:71: bar tooltips show raw cent integers, e.g. 'Nov: 320000' (cosmetic)",
+     "lib/storage.ts + lib/store.ts: two duplicate storage modules exist, and the seed is not saved until the first edit (cosmetic)"
+    ]
+   }
+  },
+  {
+   "pair": "a5",
+   "run": "20261116-053134",
+   "objective": "ledgerly",
+   "provider": "deepseek",
+   "X": "single",
+   "Y": "slimtoken",
+   "audit": {
+    "coverage": {
+     "better": "Y",
+     "better_if_built": "X",
+     "margin": "large",
+     "why": "As delivered, Y is far better. X's production build fails because budgets/page.tsx and goals/page.tsx import `money` from '@/lib/money' instead of '@/lib/format', so a user gets nothing. Y builds and covers every page and almost every listed control, with real bugs: first-visit pages show empty data and can overwrite the seed, split-mode saves drop the other field edits, recurring bills cannot be created, and the transactions table hardcodes USD. Y also tests only about a third of its lib modules. With X's one import fixed, X's code is slightly stronger on coverage. Everything is wired consistently through one provider, every listed control works, the seed is richer, and tests cover nearly all lib modules. Its gaps: monthStartDay is never used, Mark Paid computes the wrong next due date, and there is no goal or recurring creation.",
+     "X": {
+      "score": 8,
+      "score_if_built": 79,
+      "full": 17,
+      "partial": 3,
+      "missing": 0,
+      "broken": 1,
+      "wrong": 2,
+      "cosmetic": 0
+     },
+     "Y": {
+      "score": 72,
+      "score_if_built": 72,
+      "full": 16,
+      "partial": 5,
+      "missing": 0,
+      "broken": 1,
+      "wrong": 3,
+      "cosmetic": 2
+     }
+    },
+    "working": {
+     "better": "Y",
+     "better_if_built": "X",
+     "margin": "large",
+     "why": "As delivered, X does not run. `next build` fails because budgets/page.tsx:8 and goals/page.tsx:6 import `money` from '@/lib/money' (it lives in lib/format), so a user gets nothing. Y builds and serves every page, so Y wins by a large margin as delivered. With that one import fixed, X's code would edge ahead slightly. It has one shared context store, so data persists and stays consistent across pages with no first-load gap, and balances, charts and splits all come from real data. Its defects are: mark-paid resets the next due date to today, the split amount input is nearly impossible to type into, the month-start setting is ignored, and goals and recurring items cannot be created. Y has more controls (creating goals, recurring items and budgets) and honors the month-start setting, but it has more correctness bugs. Pages show empty data on a first visit because they read storage before the provider seeds it. Saving a split discards the other field edits. Split transactions drop out of account balances. The Transactions table always shows USD. The add-budget form's default category is out of sync with its select and fails.",
+     "X": {
+      "score": 8,
+      "score_if_built": 68,
+      "full": 6,
+      "partial": 3,
+      "missing": 0,
+      "broken": 3,
+      "wrong": 4,
+      "cosmetic": 1
+     },
+     "Y": {
+      "score": 62,
+      "score_if_built": 62,
+      "full": 5,
+      "partial": 4,
+      "missing": 0,
+      "broken": 1,
+      "wrong": 7,
+      "cosmetic": 3
+     }
+    }
+   },
+   "problems": {
+    "X": [
+     "BUILD FAILS: src/app/budgets/page.tsx:8 and src/app/goals/page.tsx:6 import { money } from '@/lib/money', but money is exported only from src/lib/format.ts:3. next build stops on this, so no page is served and nothing works as delivered.",
+     "Settings 'first day of the month for budgets' is stored (src/app/settings/page.tsx:37-46) but nothing reads it: monthStartDay appears only in settings, seed and storage. Budgets always use calendar months (src/lib/budgets.ts), so the setting is partial.",
+     "Recurring 'Mark Paid' gives the wrong next due date: markPaid sets lastPaidDate=today (src/lib/recurring.ts:32-34), and nextDueDate only advances while cursor < from (lines 10-13). Paying an upcoming bill today therefore shows it as due today instead of moving it to the next period. The test only covers paying on the due date (src/lib/__tests__/recurring.test.ts:29-32).",
+     "Goals page has contribute only, with no way to create, edit or delete a goal (src/app/goals/page.tsx). Recurring has mark paid and pause only, with no create (src/app/recurring/page.tsx).",
+     "Budget rollover looks back one month only, not a running carry-over (src/lib/budgets.ts:30-42).",
+     "Search/filters and splits sit inside transactions.ts rather than separate modules. They exist but are thinner than the prompt's module list suggests.",
+     "BUILD BREAKER: src/app/budgets/page.tsx:8 and src/app/goals/page.tsx:6 import { money } from '@/lib/money', but money is exported only from src/lib/format.ts:3. `next build` fails, so as delivered no page is served. The fix is a one-line import change in each file.",
+     "broken: src/lib/recurring.ts:6-15 + src/app/recurring/page.tsx:20. markPaid sets lastPaidDate=today, and nextDueDate then starts at today, which is not < today, so the loop never advances. After 'Mark Paid' the next due date shows TODAY instead of the next period, and the item jumps to the top of the list.",
+     "broken (near-unusable): src/components/TransactionForm.tsx:137-140. The split amount input is controlled as (s.amount/100).toFixed(2) and reparsed on every keystroke. Typing at the end ('0.00' -> '0.004') rounds back to 0.00, and backspace is undone, so a normal user cannot type a split amount. Splits are reachable only with awkward cursor placement.",
+     "broken: Settings 'First day of month' (src/app/settings/page.tsx:36-46) is saved but never read by any lib or page (grep monthStartDay). Budgets always use calendar months (src/lib/budgets.ts, src/lib/transactions.ts:93).",
+     "wrong: Goals page has no way to create, edit or delete a goal, and Recurring has no way to create one. Only seed items can be used (app/goals/page.tsx, app/recurring/page.tsx).",
+     "wrong: src/lib/seed.ts:60-80 seeds every day 1-27 of the CURRENT month, so future-dated transactions (e.g. days 18-27 when today is the 15th) count in 'spending this month', in balances and in 'latest transactions'.",
+     "wrong: src/lib/budgets.ts:30-42 rollover looks back one month only and does not chain cumulative unspent amounts.",
+     "wrong: transaction category filter (src/lib/transactions.ts:77) ignores split categories.",
+     "cosmetic: the data-theme attribute is applied only after the load effect (src/components/AppProvider.tsx:32), so the page flashes light."
+    ],
+    "Y": [
+     "Every page loads and saves localStorage on its own (e.g. app/accounts/page.tsx:216-224), and StoreProvider is effectively unused. Child effects run before the parent's, so on the very first visit pages like Overview, Accounts and Transactions read null before StoreProvider seeds storage (components/StoreProvider.tsx:28-48) and show empty data. If the user then creates an account on that first visit, EMPTY_STATE plus the new account is saved, wiping the seed.",
+     "Split in detail page: in split mode handleSubmit calls onSave then onSplit (app/transactions/[id]/page.tsx:97-108). Both commit from the same stale currentState, so the split overwrites any edits just made to date, payee, account, amount or notes. splitTransaction also checks the splits against the old amount (lib/transactions.ts:105).",
+     "Recurring create is broken for bills: expenses are passed as negative cents (app/recurring/page.tsx:221), but createRecurring throws when amount <= 0 (lib/recurring.ts:62-64). Only incomes can be created. Yearly frequency is silently coerced to monthly (lib/recurring.ts:66).",
+     "Transactions table hardcodes 'USD' (app/transactions/page.tsx:88), so the currency setting is ignored there.",
+     "Budgets page renders a second Nav inside its own .app wrapper (app/budgets/page.tsx:33-52, 257-258), duplicating the layout nav.",
+     "Tests cover only types, id, categories, goals, csv and storage (tests/01-06). No tests for money, dates, budgets/rollover, recurring, transactions, filters, cashflow or reports.",
+     "The 'one global stylesheet' is split into three @imported files (app/globals.css). Seed data is thin: about 24 transactions, with some recent months empty (lib/seed.ts).",
+     "wrong (first visit): each page keeps its own state loaded from localStorage in its own useEffect (app/page.tsx:100-104, app/accounts/page.tsx:216-219, app/transactions/page.tsx:329-343, app/goals/page.tsx:161-165, app/reports/page.tsx:127-131, app/transactions/[id]/page.tsx:271-275). Child effects run before StoreProvider's seeding effect (components/StoreProvider.tsx:27-48), so on a first visit these pages show empty data (net worth $0, 'No transactions yet') until a reload. Any action taken then (e.g. adding an account) commits the empty state and overwrites the seed.",
+     "broken: app/transactions/[id]/page.tsx:97-108 + 323-330. In split mode, submit calls onSave and then onSplit, and both build on the same stale `currentState`. The split commit overwrites the field edits just saved (date, payee, amount, notes, tags are lost). If the amount was changed, splitTransaction checks against the old amount.",
+     "wrong: lib/accounts.ts:66 accountBalance skips any transaction with splits, so splitting a transaction removes it from the account balance. Net worth (lib/cashflow.ts:61-71) still counts it, so Accounts and Overview disagree.",
+     "wrong: app/transactions/page.tsx:88 formats amounts with hard-coded 'USD', ignoring the currency setting on the Transactions table.",
+     "wrong: app/budgets/page.tsx:120 + 310-325. The categoryId state defaults to 'groceries', but the select lists only unbudgeted categories (groceries is already budgeted in the seed). The browser shows a different first option while the state is still groceries, so 'Add budget' fails with 'Budget already exists for groceries' until the user changes the select.",
+     "wrong: lib/goals.ts:38 dates the optional 'already saved' contribution at the goal's target date (a future date), not today.",
+     "wrong: lib/goals.ts:66 monthlyNeeded returns 0 once the target date has passed, even though money is still owed.",
+     "wrong: lib/csv.ts:25 exports the raw accountId instead of the account name, and splits are not exported.",
+     "cosmetic: app/budgets/page.tsx:33-52,258 renders a second Nav inside the layout's nav (double navigation bar).",
+     "cosmetic: layout nav uses plain <a> links (app/layout.tsx:29), so every navigation is a full page reload. Category colors in the donut are positional, not per-category.",
+     "cosmetic: app/transactions/page.tsx:207 defaults the new-transaction date with toISOString() (UTC), which can be tomorrow in the evening in the Americas."
+    ]
+   }
+  }
+ ]
+}

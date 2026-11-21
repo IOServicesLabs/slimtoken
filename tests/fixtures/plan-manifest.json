@@ -1,0 +1,154 @@
+{
+  "files": [
+    {
+      "path": "package.json",
+      "purpose": "Dependencies, scripts, and project metadata.",
+      "exports": [
+        "export const name: string  // \"taskflow\"",
+        "export const scripts: Record<string, string>  // {dev: \"next dev\", build: \"next build\", start: \"next start\", test: \"vitest run\"}",
+        "export const dependencies: Record<string, string>  // {next, react, react-dom}",
+        "export const devDependencies: Record<string, string>  // {typescript, @types/react, @types/react-dom, @types/node, vitest}"
+      ]
+    },
+    {
+      "path": "tsconfig.json",
+      "purpose": "Strict TypeScript compiler configuration.",
+      "exports": [
+        "export const compilerOptions: Record<string, unknown>  // {strict: true, jsx: \"preserve\", module: \"esnext\", moduleResolution: \"bundler\", target: \"es2022\", lib: [\"dom\", \"es2022\"], noEmit: true, esModuleInterop: true, skipLibCheck: true, plugins: [{name: \"next\"}], paths: {\"@/*\": [\"./*\"]}}",
+        "export const include: string[]  // [\"next-env.d.ts\", \"**/*.ts\", \"**/*.tsx\", \".next/types/**/*.ts\"]",
+        "export const exclude: string[]  // [\"node_modules\"]"
+      ]
+    },
+    {
+      "path": "next.config.mjs",
+      "purpose": "Next.js configuration with no custom plugins.",
+      "exports": [
+        "export default nextConfig  // {}: empty config object, no plugins"
+      ]
+    },
+    {
+      "path": "app/globals.css",
+      "purpose": "Global stylesheet with all app CSS classes.",
+      "exports": [
+        ".app-shell  // page wrapper, column flex",
+        ".nav  // top bar, horizontal flex links",
+        ".nav-link  // nav anchor, padded",
+        ".nav-link-active  // current nav anchor, highlighted",
+        ".card  // bordered panel",
+        ".card-grid  // responsive grid of summary cards",
+        ".stat-value  // large numeric metric",
+        ".stat-label  // small metric caption",
+        ".progress  // progress bar track",
+        ".progress-fill  // progress bar fill",
+        ".board  // kanban columns, horizontal flex",
+        ".column  // kanban column, vertical flex",
+        ".task-card  // draggable task tile",
+        ".task-card-overdue  // task tile with overdue accent",
+        ".filter-bar  // row of filter controls",
+        ".calendar-grid  // 7-column month grid",
+        ".calendar-cell  // single day cell",
+        ".calendar-cell-today  // today cell, highlighted",
+        ".calendar-task  // task chip inside a day cell",
+        ".avatar  // circular initials badge",
+        ".table  // data table, full width",
+        ".form-field  // label plus input stack",
+        ".button  // primary action button",
+        ".button-secondary  // secondary action button",
+        ".badge  // small status or label pill",
+        ".highlight  // search match emphasis",
+        ".theme-dark  // dark theme root overrides"
+      ]
+    },
+    {
+      "path": "app/layout.tsx",
+      "purpose": "Root layout with nav and theme provider.",
+      "exports": [
+        "export default function RootLayout({ children }: { children: React.ReactNode })  // renders html/body, nav links, applies theme class from storage; children rendered as-is"
+      ]
+    },
+    {
+      "path": "app/page.tsx",
+      "purpose": "Dashboard page with summary cards and charts.",
+      "exports": [
+        "export default function DashboardPage()  // client page; loads seed on first load; renders summary cards, burndown SVG, status SVG, activity feed; empty store -> zeros and empty feed"
+      ]
+    },
+    {
+      "path": "app/tasks/[id]/page.tsx",
+      "purpose": "Task detail editing, subtasks, and comments.",
+      "exports": [
+        "export default async function TaskDetailPage({ params }: { params: Promise<{ id: string }> })  // awaits params; missing task -> notFound()"
+      ]
+    },
+    {
+      "path": "components/Nav.tsx",
+      "purpose": "Top navigation bar linking all pages.",
+      "exports": [
+        "export default function Nav()  // renders links to /, /projects, /board, /calendar, /team, /reports, /search, /settings; no props"
+      ]
+    },
+    {
+      "path": "components/TaskCard.tsx",
+      "purpose": "Compact task card for board and lists.",
+      "exports": [
+        "export default function TaskCard(props: {task: Task; assignee?: Member; onOpen: (taskId: string) => void})  // assignee undefined -> no avatar; overdue dueDate < today shows overdue class"
+      ]
+    },
+    {
+      "path": "lib/types.ts",
+      "purpose": "Shared domain type definitions.",
+      "exports": [
+        "export type Priority = 'low' | 'medium' | 'high'  // exactly these three literals",
+        "export type Status = 'backlog' | 'in-progress' | 'review' | 'done'  // exactly these four literals",
+        "export interface Task { id: string; projectId: string; title: string; description: string; status: Status; priority: Priority; dueDate: string | null; assigneeId: string | null; labels: string[]; subtasks: Subtask[]; comments: Comment[]; createdAt: string; completedAt: string | null }  // labels/subtasks/comments default []",
+        "export interface Project { id: string; name: string; description: string; archived: boolean; createdAt: string }  // archived default false"
+      ]
+    },
+    {
+      "path": "lib/dates.ts",
+      "purpose": "Date formatting and calendar helpers.",
+      "exports": [
+        "export function toISODate(d: Date): string  // 'YYYY-MM-DD' local; invalid Date -> throws RangeError",
+        "export function parseISODate(s: string): Date  // local midnight; bad format -> throws RangeError",
+        "export function addDays(iso: string, n: number): string  // ISO shifted by n days; n===0 -> same",
+        "export function monthGrid(year: number, month: number): string[]  // length 42, starts Sunday on/before 1st; month 0-11 else RangeError"
+      ]
+    },
+    {
+      "path": "lib/storage.ts",
+      "purpose": "Local storage load and save.",
+      "exports": [
+        "export function loadState(): AppState  // {projects: [], tasks: [], members: [], comments: [], settings: {theme: 'light', defaultProjectId: null}} when empty; corrupt JSON -> seeded state",
+        "export function saveState(state: AppState): void  // writes JSON; no-op when window undefined",
+        "export function resetState(): AppState  // clears key then returns seeded state",
+        "export function isSeeded(): boolean  // true when stored key exists and parses"
+      ]
+    },
+    {
+      "path": "lib/seed.ts",
+      "purpose": "Realistic seed data for first load.",
+      "exports": [
+        "export interface SeedData  // {projects: Project[], tasks: Task[], members: Member[], comments: Comment[], labels: Label[]}",
+        "export function createSeedData(): SeedData  // 3 projects, 12 tasks, 4 members, 6 comments, 5 labels; ids unique"
+      ]
+    },
+    {
+      "path": "lib/tasks.ts",
+      "purpose": "Task CRUD and filtering logic.",
+      "exports": [
+        "export interface Task  // {id: string, projectId: string, title: string, description: string, status: 'Backlog'|'In Progress'|'Review'|'Done', priority: 'low'|'medium'|'high', dueDate: string, assigneeId: string, labelIds: string[], subtasks: Subtask[], createdAt: string, completedAt: string|null}",
+        "export function createTask(tasks: Task[], input: {projectId: string, title: string, description?: string, priority?: 'low'|'medium'|'high', dueDate?: string, assigneeId?: string, labelIds?: string[]}): Task[]  // returns new array length+1; empty title -> throws Error",
+        "export function updateTask(tasks: Task[], id: string, patch: Partial<Omit<Task,'id'|'projectId'|'createdAt'>>): Task[]  // missing id -> same array; status->Done sets completedAt",
+        "export function filterTasks(tasks: Task[], filters: {assigneeId?: string, priority?: 'low'|'medium'|'high', status?: Task['status']}): Task[]  // no filters -> all tasks; subset preserving order"
+      ]
+    }
+  ],
+  "test_files": [
+    {
+      "path": "tests/all.test.ts",
+      "purpose": "tests for every module",
+      "exports": []
+    }
+  ],
+  "readme": true
+}

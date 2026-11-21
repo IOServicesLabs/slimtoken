@@ -1,0 +1,15 @@
+Build "Gradebook", a complete class gradebook web app for a teacher with Next.js (App Router) and TypeScript. No backend: all data lives in local storage, with realistic seed data on first load. No UI or chart libraries: plain React, one global stylesheet, charts drawn with inline SVG.
+
+Pages:
+- Dashboard: class averages, students at risk (below the passing grade), upcoming assignments, and a grade distribution chart.
+- Classes: list of classes with student count and average; create, rename, archive.
+- Class detail: a grade table of students by assignments with inline score entry, weighted category averages and the final letter grade per student.
+- Assignments: list per class with category (homework, quiz, exam), due date and max points; create, edit, delete.
+- Students: list with search; create and edit; student detail with grades across classes and a trend chart.
+- Attendance: mark present, absent or late per class per day, with attendance rate per student.
+- Reports: per-class report with averages per assignment, and CSV export of the grade table.
+- Settings: category weights, grading scale (letter thresholds), passing grade, theme (light, dark), and reset demo data.
+
+Put all domain logic in pure lib modules: classes, students, assignments, scores, weighted averages, letter grades, attendance, reports, CSV export, storage, seed data, date helpers and id generation. Include Vitest tests for the lib modules and a README.
+
+Quality bar: every page is complete and usable, with real controls wired to the lib modules. No stubs, no placeholders, no TODO comments, and no import of a file that you do not write. The project must pass `npm install`, `npm run build` (type check included) and `npm test`.

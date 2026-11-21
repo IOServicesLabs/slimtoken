@@ -1,0 +1,15 @@
+Build "Helpdesk", a complete support ticket web app with Next.js (App Router) and TypeScript. No backend: all data lives in local storage, with realistic seed data on first load. No UI or chart libraries: plain React, one global stylesheet, charts drawn with inline SVG.
+
+Pages:
+- Dashboard: open tickets by priority, tickets breaching their SLA, average first response time, and a tickets created per day chart.
+- Tickets: list with status (new, open, pending, resolved, closed), priority, assignee and age; filter and sort; create.
+- Ticket detail: the conversation thread with public replies and internal notes, change status, priority and assignee, and the SLA countdown.
+- Customers: list with search; create and edit; customer detail with their tickets.
+- Agents: support agents with their open ticket count and resolved this week.
+- Canned replies: saved reply templates; create, edit, delete, insert into a reply.
+- Reports: resolution time statistics, tickets per category, and CSV export.
+- Settings: SLA targets per priority (first response and resolution), business hours, theme (light, dark), and reset demo data.
+
+Put all domain logic in pure lib modules: tickets, status transitions, messages, SLA calculation, customers, agents, canned replies, search, reports, CSV export, storage, seed data, date helpers and id generation. Include Vitest tests for the lib modules and a README.
+
+Quality bar: every page is complete and usable, with real controls wired to the lib modules. No stubs, no placeholders, no TODO comments, and no import of a file that you do not write. The project must pass `npm install`, `npm run build` (type check included) and `npm test`.

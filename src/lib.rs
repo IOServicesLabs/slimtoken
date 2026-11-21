@@ -137,26 +137,45 @@
 #[cfg(feature = "serve")]
 pub mod api;
 pub mod architect;
+pub mod check;
 pub mod client;
+pub mod continuation;
+pub mod contract;
 pub mod control;
 pub mod controller;
 pub mod dag;
 pub mod failover;
+pub mod guard;
+pub mod hedge;
 pub mod interactive;
+pub mod inwave;
 mod jsonfix;
+pub mod objective;
+pub mod pagefork;
+pub mod pagelocal;
+pub mod pipeline;
 pub mod planner;
 pub mod profile;
+pub mod project;
 pub mod provider;
 pub mod reconcile;
 pub mod record;
+pub mod references;
+pub mod repair;
 pub mod runner;
 pub mod scheduler;
+pub mod semantics;
+pub mod skelcompact;
+pub mod speedrace;
+pub mod splitpage;
+pub mod stylesheet;
 
 pub use async_trait::async_trait;
 pub use client::{
-    report_first_token, BackendHealth, BudgetExhaustedError, Completion, CompletionRequest,
-    FanOutBackend, FanOutClient, HealthRoutingConfig, ModelClient, OverloadedError, PermanentError,
-    PlanningUsage, RateLimitedError, UsageCountingClient,
+    report_first_token, report_stream_started, report_text, BackendHealth, BudgetExhaustedError,
+    Completion, CompletionRequest, FanOutBackend, FanOutClient, HealthRoutingConfig, ModelClient,
+    OverloadedError, PermanentError, PlanningUsage, PrewarmReport, RateLimitedError,
+    UsageCountingClient,
 };
 pub use control::{RunControl, TaskProgress, TaskProgressStatus};
 pub use controller::{ConcurrencyController, ControllerConfig, ControllerStats};

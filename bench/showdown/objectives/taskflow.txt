@@ -1,0 +1,16 @@
+Build "TaskFlow", a complete project management web app with Next.js (App Router) and TypeScript. No backend: all data lives in local storage, with realistic seed data on first load. No UI or chart libraries: plain React, one global stylesheet, charts drawn with inline SVG.
+
+Pages:
+- Dashboard: summary cards (open tasks, overdue, completed this week), a burndown chart, a tasks-by-status chart and a recent activity feed.
+- Projects: list of projects with progress bars; create, rename, archive.
+- Board: a kanban board for one project with columns Backlog, In Progress, Review, Done; move tasks between columns, filter by assignee and priority.
+- Task detail: edit title, description, priority, due date, assignee, labels; subtasks with a checklist; comments.
+- Calendar: month view with tasks on their due dates, previous and next month.
+- Team: members with avatar initials, role, and workload (open tasks per member).
+- Reports: velocity per week, cycle time statistics, and CSV export of tasks.
+- Search: global search across tasks, projects and comments with highlighted matches.
+- Settings: theme (light, dark), default project, and reset demo data.
+
+Put all domain logic in pure lib modules: tasks, projects, board moves, subtasks, comments, labels, team workload, calendar grid, burndown, velocity, cycle time, search, CSV export, storage, seed data, date helpers and id generation. Include Vitest tests for the lib modules and a README.
+
+Quality bar: every page is complete and usable, with real controls wired to the lib modules. No stubs, no placeholders, no TODO comments, and no import of a file that you do not write. The project must pass `npm install`, `npm run build` (type check included) and `npm test`.

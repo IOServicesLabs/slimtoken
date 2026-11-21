@@ -1,0 +1,15 @@
+Build "Bookly", a complete appointment booking web app for a small studio with Next.js (App Router) and TypeScript. No backend: all data lives in local storage, with realistic seed data on first load. No UI or chart libraries: plain React, one global stylesheet, charts drawn with inline SVG.
+
+Pages:
+- Dashboard: today's appointments, the week's booked hours, no-show rate, and a bookings per weekday chart.
+- Calendar: a week view of appointments by time slot for each staff member, previous and next week, and click a free slot to book.
+- Book appointment: choose a service, a staff member and a free time slot (respecting opening hours, service duration and existing bookings), then the client.
+- Appointment detail: reschedule, cancel, mark completed or no-show, and notes.
+- Clients: list with search; create and edit; client detail with visit history and total spent.
+- Services: list of services with duration and price; create, edit, deactivate.
+- Staff: staff members with working days and hours; create and edit.
+- Settings: opening hours, slot length, currency, theme (light, dark), and reset demo data.
+
+Put all domain logic in pure lib modules: appointments, availability and slot generation, services, staff schedules, clients, stats, storage, seed data, money formatting, date and time helpers and id generation. Include Vitest tests for the lib modules and a README.
+
+Quality bar: every page is complete and usable, with real controls wired to the lib modules. No stubs, no placeholders, no TODO comments, and no import of a file that you do not write. The project must pass `npm install`, `npm run build` (type check included) and `npm test`.

@@ -25,6 +25,8 @@ use serde::Serialize;
 
 use crate::client::ModelClient;
 use crate::dag::{Plan, Task};
+use crate::profile::Staging;
+use crate::project::{apply_edit_blocks, EDIT_FORMAT};
 use crate::scheduler::{
     escalate_effort, execute_plan, run_shell_piped, RunReport, SchedulerConfig, TaskStatus,
 };
@@ -104,9 +106,15 @@ fn count_before(text: &str, word: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
-fn is_test_file(path: &str) -> bool {
-    let name = path.rsplit('/').next().unwrap_or(path);
-    path.starts_with("tests/") || name.starts_with("test_")
+/// The test classification of `reconcile` and `reconcile_with`: test globs
+/// for a Python layout (`tests/` at the root, `test_*` names), and nothing
+/// else. `reconcile_for` takes a profile's staging instead.
+pub fn default_test_staging() -> &'static Staging {
+    static DEFAULT: Staging = Staging {
+        test_globs: &["tests/*/**", "test_*"],
+        ..crate::profile::NO_STAGING
+    };
+    &DEFAULT
 }
 
 fn mentions(text: &str, path: &str) -> bool {
@@ -175,6 +183,7 @@ fn reconcile_prompt(
     excerpt: &str,
     context: &str,
     edits: bool,
+    tests: &Staging,
 ) -> String {
     let path = &task.title;
     let mut prompt = task.prompt.clone();
@@ -189,7 +198,7 @@ fn reconcile_prompt(
             "\nThe implementation these tests exercise:\n{context}\n"
         );
     }
-    let rules = if is_test_file(path) {
+    let rules = if tests.is_test(path) {
         "Fix tests that contradict the interface contracts or that expect \
          behavior the contracts leave open: align those with the \
          implementation shown. Keep every test of contract-stated behavior. \
@@ -219,55 +228,6 @@ fn reconcile_prompt(
 /// Token budget for one edit-block repair (output plus reasoning).
 const EDIT_REPAIR_MAX_TOKENS: u32 = 4096;
 
-/// Edit-mode output contract: a repair usually changes a few assertions,
-/// and regenerating the whole file cost ~2.5k tokens (+~1k reasoning) and
-/// ~9s per test file on the Recall build.
-const EDIT_FORMAT: &str = "Output ONLY search/replace edit blocks, never the whole \
-file:\n<<<<<<< SEARCH\n(lines copied exactly from your current version)\n=======\n\
-(their replacement)\n>>>>>>> REPLACE\nEach SEARCH must match exactly one place in \
-the current version; include enough surrounding lines to make it unique. Use as \
-many blocks as the fix needs.";
-
-/// Apply search/replace edit blocks to `current`. None unless there is at
-/// least one block and every SEARCH matches exactly once (an ambiguous or
-/// missing anchor means the edit cannot be placed safely).
-fn apply_edit_blocks(current: &str, edits: &str) -> Option<String> {
-    let edits = edits.replace("\r\n", "\n");
-    let mut text = current.replace("\r\n", "\n");
-    let mut applied = 0;
-    let mut lines = edits.lines();
-    while let Some(line) = lines.next() {
-        if line.trim_end() != "<<<<<<< SEARCH" {
-            continue;
-        }
-        let mut search = Vec::new();
-        let mut replace = Vec::new();
-        let mut in_replace = false;
-        let mut closed = false;
-        for line in lines.by_ref() {
-            match line.trim_end() {
-                "=======" if !in_replace => in_replace = true,
-                ">>>>>>> REPLACE" if in_replace => {
-                    closed = true;
-                    break;
-                }
-                _ if in_replace => replace.push(line),
-                _ => search.push(line),
-            }
-        }
-        if !closed || search.is_empty() {
-            return None;
-        }
-        let search = search.join("\n");
-        if text.matches(&search).count() != 1 {
-            return None;
-        }
-        text = text.replacen(&search, &replace.join("\n"), 1);
-        applied += 1;
-    }
-    (applied > 0).then_some(text)
-}
-
 /// Test the assembled deliverable and repair implicated artifacts once.
 /// `assemble` renders the deliverable from a report (the CLI's final-output
 /// builder). Returns `None` when the tests already pass.
@@ -292,6 +252,34 @@ pub async fn reconcile_with(
     test_cmd: &str,
     assemble: impl Fn(&RunReport) -> String,
     edits: bool,
+) -> Result<Option<ReconcileSummary>> {
+    reconcile_for(
+        plan,
+        report,
+        client,
+        config,
+        test_cmd,
+        assemble,
+        edits,
+        default_test_staging(),
+    )
+    .await
+}
+
+/// `reconcile_with`, with the test files classified by `tests.test_globs`
+/// (a profile's `staging`): a test file gets the test-side rules and sees
+/// the modules it imports. `reconcile_with` passes
+/// [`default_test_staging`], which classifies as before.
+#[allow(clippy::too_many_arguments)]
+pub async fn reconcile_for(
+    plan: &Plan,
+    report: &mut RunReport,
+    client: Arc<dyn ModelClient>,
+    config: SchedulerConfig,
+    test_cmd: &str,
+    assemble: impl Fn(&RunReport) -> String,
+    edits: bool,
+    tests: &Staging,
 ) -> Result<Option<ReconcileSummary>> {
     let started = std::time::Instant::now();
     let (before, failures) = run_tests(test_cmd, &assemble(report)).await?;
@@ -326,10 +314,10 @@ pub async fn reconcile_with(
         }
         let current = outputs[task.id.as_str()];
         let mut context = String::new();
-        if is_test_file(&task.title) {
+        if tests.is_test(&task.title) {
             for module in code_tasks
                 .iter()
-                .filter(|other| !is_test_file(&other.title))
+                .filter(|other| !tests.is_test(&other.title))
                 .filter(|other| imports_module(current, &other.title))
             {
                 let source = outputs[module.id.as_str()].trim();
@@ -340,7 +328,7 @@ pub async fn reconcile_with(
             }
         }
         let mut repair = (*task).clone();
-        repair.prompt = reconcile_prompt(task, current, &excerpt, &context, edits);
+        repair.prompt = reconcile_prompt(task, current, &excerpt, &context, edits, tests);
         repair.deps.clear();
         if edits {
             // The output is edit blocks, not an artifact: the fence check and
@@ -523,6 +511,7 @@ mod tests {
             static_output: None,
             reasoning_effort: None,
             internal: false,
+            prefix_split: None,
         };
         let plan = Plan {
             objective: "reconcile test".into(),
@@ -569,6 +558,47 @@ mod tests {
         assert_eq!(report.tasks["mod"].output.as_deref(), Some("FIXED"));
         assert_eq!(report.tasks["other"].output.as_deref(), Some("broken"));
         assert_eq!(summary.before.failed, Some(1));
+    }
+
+    #[test]
+    fn python_test_classification_is_unchanged() {
+        // The rule before the PYTHON test globs replaced it.
+        fn before(path: &str) -> bool {
+            let name = path.rsplit('/').next().unwrap_or(path);
+            path.starts_with("tests/") || name.starts_with("test_")
+        }
+        for path in [
+            "tests/test_a.py",
+            "tests/a.py",
+            "tests/sub/deep/a.py",
+            "tests/",
+            "tests//a.py",
+            "tests",
+            "tests.py",
+            "Tests/a.py",
+            "mytests/a.py",
+            "pkg/tests/a.py",
+            "/tests/a.py",
+            "tests\\a.py",
+            "test_a.py",
+            "pkg/test_a.py",
+            "pkg/sub/test_.py",
+            "test_",
+            "test",
+            "testing.py",
+            "a_test.py",
+            "test_dir/a.py",
+            "x/test_/y.py",
+            "lib/a.test.ts",
+            "tests/a.test.ts",
+            "",
+        ] {
+            assert_eq!(
+                default_test_staging().is_test(path),
+                before(path),
+                "{path:?}"
+            );
+        }
     }
 
     #[test]

@@ -1,0 +1,441 @@
+{
+  "manifest": {
+    "files": [
+      {
+        "exports": [
+          "export const name: string  // \"taskflow\"",
+          "export const scripts: Record<string, string>  // {dev: \"next dev\", build: \"next build\", start: \"next start\", test: \"vitest run\"}",
+          "export const dependencies: Record<string, string>  // {next, react, react-dom}",
+          "export const devDependencies: Record<string, string>  // {typescript, @types/react, @types/react-dom, @types/node, vitest}"
+        ],
+        "path": "package.json",
+        "purpose": "Dependencies, scripts, and project metadata."
+      },
+      {
+        "exports": [
+          "export const compilerOptions: Record<string, unknown>  // {strict: true, jsx: \"preserve\", module: \"esnext\", moduleResolution: \"bundler\", target: \"es2022\", lib: [\"dom\", \"es2022\"], noEmit: true, esModuleInterop: true, skipLibCheck: true, plugins: [{name: \"next\"}], paths: {\"@/*\": [\"./*\"]}}",
+          "export const include: string[]  // [\"next-env.d.ts\", \"**/*.ts\", \"**/*.tsx\", \".next/types/**/*.ts\"]",
+          "export const exclude: string[]  // [\"node_modules\"]"
+        ],
+        "path": "tsconfig.json",
+        "purpose": "Strict TypeScript compiler configuration."
+      },
+      {
+        "exports": [
+          "export default nextConfig  // {}: empty config object, no plugins"
+        ],
+        "path": "next.config.mjs",
+        "purpose": "Next.js configuration with no custom plugins."
+      },
+      {
+        "exports": [],
+        "path": "app/globals.css",
+        "purpose": "Imports the parts of the global style sheet."
+      },
+      {
+        "exports": [
+          ".app-shell  // page wrapper, column flex",
+          ".nav  // top bar, horizontal flex links",
+          ".nav-link  // nav anchor, padded",
+          ".nav-link-active  // current nav anchor, highlighted",
+          ".card  // bordered panel",
+          ".card-grid  // responsive grid of summary cards",
+          ".stat-value  // large numeric metric"
+        ],
+        "path": "app/styles/part1.css",
+        "purpose": "Part 1 of 4 of the global style sheet. Starts with the reset, the `body` and base element styles, and the variables --bg, --surface, --surface-2, --text, --muted, --border, --accent, --accent-contrast, --danger, --success, --warning, --radius, --shadow on `:root` with their dark values on `.theme-dark`. Then only the rules of the classes listed for this part (with their hover, focus and small-screen rules). All colours come from the variables."
+      },
+      {
+        "exports": [
+          ".stat-label  // small metric caption",
+          ".progress  // progress bar track",
+          ".progress-fill  // progress bar fill",
+          ".board  // kanban columns, horizontal flex",
+          ".column  // kanban column, vertical flex",
+          ".task-card  // draggable task tile",
+          ".task-card-overdue  // task tile with overdue accent"
+        ],
+        "path": "app/styles/part2.css",
+        "purpose": "Part 2 of 4 of the global style sheet: only the rules of the classes listed for this part (with their hover, focus and small-screen rules). No reset, no `:root`, no `body` rules. All colours, radii and shadows come from these variables, which part 1 defines for the light and the dark theme: --bg, --surface, --surface-2, --text, --muted, --border, --accent, --accent-contrast, --danger, --success, --warning, --radius, --shadow."
+      },
+      {
+        "exports": [
+          ".filter-bar  // row of filter controls",
+          ".calendar-grid  // 7-column month grid",
+          ".calendar-cell  // single day cell",
+          ".calendar-cell-today  // today cell, highlighted",
+          ".calendar-task  // task chip inside a day cell",
+          ".avatar  // circular initials badge",
+          ".table  // data table, full width"
+        ],
+        "path": "app/styles/part3.css",
+        "purpose": "Part 3 of 4 of the global style sheet: only the rules of the classes listed for this part (with their hover, focus and small-screen rules). No reset, no `:root`, no `body` rules. All colours, radii and shadows come from these variables, which part 1 defines for the light and the dark theme: --bg, --surface, --surface-2, --text, --muted, --border, --accent, --accent-contrast, --danger, --success, --warning, --radius, --shadow."
+      },
+      {
+        "exports": [
+          ".form-field  // label plus input stack",
+          ".button  // primary action button",
+          ".button-secondary  // secondary action button",
+          ".badge  // small status or label pill",
+          ".highlight  // search match emphasis",
+          ".theme-dark  // dark theme root overrides"
+        ],
+        "path": "app/styles/part4.css",
+        "purpose": "Part 4 of 4 of the global style sheet: only the rules of the classes listed for this part (with their hover, focus and small-screen rules). No reset, no `:root`, no `body` rules. All colours, radii and shadows come from these variables, which part 1 defines for the light and the dark theme: --bg, --surface, --surface-2, --text, --muted, --border, --accent, --accent-contrast, --danger, --success, --warning, --radius, --shadow."
+      },
+      {
+        "exports": [
+          "export default function RootLayout({ children }: { children: React.ReactNode })  // renders html/body, nav links, applies theme class from storage; children rendered as-is"
+        ],
+        "path": "app/layout.tsx",
+        "purpose": "Root layout with nav and theme provider."
+      },
+      {
+        "exports": [
+          "export default function DashboardPage()  // client page; loads seed on first load; renders summary cards, burndown SVG, status SVG, activity feed; empty store -> zeros and empty feed"
+        ],
+        "path": "app/page.tsx",
+        "purpose": "Dashboard page with summary cards and charts."
+      },
+      {
+        "exports": [
+          "export default function ProjectsPage()  // renders project list; empty list -> empty-state message; create/rename/archive call lib/projects"
+        ],
+        "path": "app/projects/page.tsx",
+        "purpose": "Projects list with create, rename, archive."
+      },
+      {
+        "exports": [
+          "export default function BoardPage()  // renders 4 columns Backlog/In Progress/Review/Done; filters by assignee and priority; moves call lib/board"
+        ],
+        "path": "app/board/page.tsx",
+        "purpose": "Kanban board with columns and filters."
+      },
+      {
+        "exports": [
+          "export default async function TaskDetailPage({ params }: { params: Promise<{ id: string }> })  // awaits params; missing task -> notFound()"
+        ],
+        "path": "app/tasks/[id]/page.tsx",
+        "purpose": "Task detail editing, subtasks, and comments."
+      },
+      {
+        "exports": [
+          "export default async function CalendarPage({ searchParams }: { searchParams: Promise<{ month?: string }> })  // month=YYYY-MM; invalid/missing -> current month"
+        ],
+        "path": "app/calendar/page.tsx",
+        "purpose": "Month calendar view with navigation."
+      },
+      {
+        "exports": [
+          "export default function TeamPage()  // renders members from lib/team; empty team -> empty-state message"
+        ],
+        "path": "app/team/page.tsx",
+        "purpose": "Team members with roles and workload."
+      },
+      {
+        "exports": [
+          "export default function ReportsPage()  // renders velocity/cycle stats; no tasks -> zeroed stats; CSV button downloads tasks"
+        ],
+        "path": "app/reports/page.tsx",
+        "purpose": "Velocity, cycle time, and CSV export."
+      },
+      {
+        "exports": [
+          "export default function SearchPage()  // client page; reads ?q via useSearchParams, renders input + results from searchAll"
+        ],
+        "path": "app/search/page.tsx",
+        "purpose": "Global search with highlighted matches."
+      },
+      {
+        "exports": [
+          "export default function SettingsPage()  // client page; theme select, default project select, reset button wired to lib"
+        ],
+        "path": "app/settings/page.tsx",
+        "purpose": "Theme, default project, and reset controls."
+      },
+      {
+        "exports": [
+          "export default function Nav()  // renders links to /, /projects, /board, /calendar, /team, /reports, /search, /settings; no props"
+        ],
+        "path": "components/Nav.tsx",
+        "purpose": "Top navigation bar linking all pages."
+      },
+      {
+        "exports": [
+          "export default function SummaryCards(props: {openTasks: number, overdue: number, completedThisWeek: number})  // renders three cards; zero values render 0"
+        ],
+        "path": "components/SummaryCards.tsx",
+        "purpose": "Dashboard summary metric cards."
+      },
+      {
+        "exports": [
+          "export default function BurndownChart(props: { points: { date: string; remaining: number; ideal: number }[] })  // points.length===0 -> renders empty svg with no polyline; one polyline per series, x scaled across points.length, y scaled to max remaining/ideal (0 -> flat baseline)"
+        ],
+        "path": "components/BurndownChart.tsx",
+        "purpose": "Inline SVG burndown chart."
+      },
+      {
+        "exports": [
+          "export default function StatusChart(props: { counts: { status: string; count: number }[] })  // counts.length===0 -> empty svg; one bar per entry, bar height proportional to count/max count (max 0 -> all zero-height bars)"
+        ],
+        "path": "components/StatusChart.tsx",
+        "purpose": "Inline SVG tasks-by-status chart."
+      },
+      {
+        "exports": [
+          "export default function ActivityFeed(props: { entries: ActivityEntry[] })  // entries.length===0 -> renders empty-state text; renders one row per entry in order"
+        ],
+        "path": "components/ActivityFeed.tsx",
+        "purpose": "Recent activity list rendering."
+      },
+      {
+        "exports": [
+          "export default function ProjectCard(props: { project: Project; progress: number; onRename: (id: string, name: string) => void; onArchive: (id: string) => void })  // progress clamped to 0..100 for bar width; archived project hides actions"
+        ],
+        "path": "components/ProjectCard.tsx",
+        "purpose": "Project row with progress bar and actions."
+      },
+      {
+        "exports": [
+          "export default function BoardColumn(props: {status: TaskStatus; tasks: Task[]; members: Member[]; onMove: (taskId: string, status: TaskStatus) => void; onOpen: (taskId: string) => void})  // tasks: [] -> empty column; renders one TaskCard per task"
+        ],
+        "path": "components/BoardColumn.tsx",
+        "purpose": "Kanban column with task cards."
+      },
+      {
+        "exports": [
+          "export default function TaskCard(props: {task: Task; assignee?: Member; onOpen: (taskId: string) => void})  // assignee undefined -> no avatar; overdue dueDate < today shows overdue class"
+        ],
+        "path": "components/TaskCard.tsx",
+        "purpose": "Compact task card for board and lists."
+      },
+      {
+        "exports": [
+          "export default function SubtaskList(props: {subtasks: Subtask[]; onToggle: (id: string) => void; onAdd: (title: string) => void; onDelete: (id: string) => void})  // subtasks.length===0 -> renders empty-state text; add with blank title -> onAdd not called"
+        ],
+        "path": "components/SubtaskList.tsx",
+        "purpose": "Checklist of subtasks with toggles."
+      },
+      {
+        "exports": [
+          "export default function CommentList(props: {comments: Comment[]; onAdd: (body: string) => void})  // comments.length===0 -> renders empty-state text; blank body -> onAdd not called"
+        ],
+        "path": "components/CommentList.tsx",
+        "purpose": "Comment thread with add form."
+      },
+      {
+        "exports": [
+          "export default function CalendarGrid(props: { year: number; month: number; tasks: Task[]; onSelectTask: (id: string) => void })  // renders 7-col grid; cells.length === weeks*7; tasks placed by dueDate; empty tasks -> empty cells"
+        ],
+        "path": "components/CalendarGrid.tsx",
+        "purpose": "Month grid rendering tasks by due date."
+      },
+      {
+        "exports": [
+          "export default function Highlight(props: { text: string; query: string })  // empty query -> plain text; case-insensitive; no match -> plain text"
+        ],
+        "path": "components/Highlight.tsx",
+        "purpose": "Renders text with highlighted search matches."
+      },
+      {
+        "exports": [
+          "export type Priority = 'low' | 'medium' | 'high'  // exactly these three literals",
+          "export type Status = 'backlog' | 'in-progress' | 'review' | 'done'  // exactly these four literals",
+          "export interface Task { id: string; projectId: string; title: string; description: string; status: Status; priority: Priority; dueDate: string | null; assigneeId: string | null; labels: string[]; subtasks: Subtask[]; comments: Comment[]; createdAt: string; completedAt: string | null }  // labels/subtasks/comments default []",
+          "export interface Project { id: string; name: string; description: string; archived: boolean; createdAt: string }  // archived default false"
+        ],
+        "path": "lib/types.ts",
+        "purpose": "Shared domain type definitions."
+      },
+      {
+        "exports": [
+          "export function generateId(prefix?: string): string  // prefix omitted -> no prefix; format `${prefix}-${counter}-${random}`; always non-empty and unique per call"
+        ],
+        "path": "lib/id.ts",
+        "purpose": "Unique id generation helper."
+      },
+      {
+        "exports": [
+          "export function toISODate(d: Date): string  // 'YYYY-MM-DD' local; invalid Date -> throws RangeError",
+          "export function parseISODate(s: string): Date  // local midnight; bad format -> throws RangeError",
+          "export function addDays(iso: string, n: number): string  // ISO shifted by n days; n===0 -> same",
+          "export function monthGrid(year: number, month: number): string[]  // length 42, starts Sunday on/before 1st; month 0-11 else RangeError"
+        ],
+        "path": "lib/dates.ts",
+        "purpose": "Date formatting and calendar helpers."
+      },
+      {
+        "exports": [
+          "export function loadState(): AppState  // {projects: [], tasks: [], members: [], comments: [], settings: {theme: 'light', defaultProjectId: null}} when empty; corrupt JSON -> seeded state",
+          "export function saveState(state: AppState): void  // writes JSON; no-op when window undefined",
+          "export function resetState(): AppState  // clears key then returns seeded state",
+          "export function isSeeded(): boolean  // true when stored key exists and parses"
+        ],
+        "path": "lib/storage.ts",
+        "purpose": "Local storage load and save."
+      },
+      {
+        "exports": [
+          "export interface SeedData  // {projects: Project[], tasks: Task[], members: Member[], comments: Comment[], labels: Label[]}",
+          "export function createSeedData(): SeedData  // 3 projects, 12 tasks, 4 members, 6 comments, 5 labels; ids unique"
+        ],
+        "path": "lib/seed.ts",
+        "purpose": "Realistic seed data for first load."
+      },
+      {
+        "exports": [
+          "export interface Task  // {id: string, projectId: string, title: string, description: string, status: 'Backlog'|'In Progress'|'Review'|'Done', priority: 'low'|'medium'|'high', dueDate: string, assigneeId: string, labelIds: string[], subtasks: Subtask[], createdAt: string, completedAt: string|null}",
+          "export function createTask(tasks: Task[], input: {projectId: string, title: string, description?: string, priority?: 'low'|'medium'|'high', dueDate?: string, assigneeId?: string, labelIds?: string[]}): Task[]  // returns new array length+1; empty title -> throws Error",
+          "export function updateTask(tasks: Task[], id: string, patch: Partial<Omit<Task,'id'|'projectId'|'createdAt'>>): Task[]  // missing id -> same array; status->Done sets completedAt",
+          "export function filterTasks(tasks: Task[], filters: {assigneeId?: string, priority?: 'low'|'medium'|'high', status?: Task['status']}): Task[]  // no filters -> all tasks; subset preserving order"
+        ],
+        "path": "lib/tasks.ts",
+        "purpose": "Task CRUD and filtering logic."
+      },
+      {
+        "exports": [
+          "export interface Project {id: string; name: string; archived: boolean; createdAt: string}  // archived false on create",
+          "export function createProject(projects: Project[], name: string, id: string, now: string): Project[]  // length+1; name.trim()==='' -> throws Error('name required')",
+          "export function renameProject(projects: Project[], id: string, name: string): Project[]  // same length; unknown id -> unchanged; '' -> throws Error('name required')",
+          "export function projectProgress(projects: Project[], tasks: {projectId: string; status: string}[], id: string): {total: number; done: number; percent: number}  // percent 0 when total===0; unknown id -> {total:0,done:0,percent:0}"
+        ],
+        "path": "lib/projects.ts",
+        "purpose": "Project CRUD, progress, and archive logic."
+      },
+      {
+        "exports": [
+          "export type Column = 'Backlog' | 'In Progress' | 'Review' | 'Done'  // fixed order",
+          "export const COLUMNS: Column[]  // ['Backlog','In Progress','Review','Done']",
+          "export function moveTask(tasks: {id: string; status: string; order: number}[], id: string, to: Column): {id: string; status: string; order: number}[]  // same length; moved item status===to and order===max+1 in target; unknown id -> unchanged",
+          "export function groupByColumn(tasks: {id: string; status: string; order: number}[]): Record<Column, {id: string; status: string; order: number}[]>  // each column sorted by order asc; empty input -> all four keys []"
+        ],
+        "path": "lib/board.ts",
+        "purpose": "Kanban column moves and ordering."
+      },
+      {
+        "exports": [
+          "export interface Subtask { id: string; title: string; done: boolean }  // one checklist item",
+          "export function addSubtask(subtasks: Subtask[], title: string, id: string): Subtask[]  // length+1, appended {id,title,done:false}; empty title -> throws Error",
+          "export function toggleSubtask(subtasks: Subtask[], id: string): Subtask[]  // flips done of matching id; unknown id -> same array unchanged",
+          "export function removeSubtask(subtasks: Subtask[], id: string): Subtask[]  // length-1 without id; unknown id -> same array unchanged"
+        ],
+        "path": "lib/subtasks.ts",
+        "purpose": "Subtask add, toggle, and remove logic."
+      },
+      {
+        "exports": [
+          "export interface Comment { id: string; taskId: string; author: string; body: string; createdAt: string }  // one comment record",
+          "export function addComment(comments: Comment[], taskId: string, author: string, body: string, id: string, createdAt: string): Comment[]  // length+1, appended; empty body -> throws Error",
+          "export function listComments(comments: Comment[], taskId: string): Comment[]  // only matching taskId, input order; none -> []"
+        ],
+        "path": "lib/comments.ts",
+        "purpose": "Comment add and list logic."
+      },
+      {
+        "exports": [
+          "export interface Label { id: string; name: string; color: string }  // color is a CSS hex string",
+          "export function createLabel(name: string, color: string): Label  // {id, name, color}; empty name -> throws Error",
+          "export function toggleLabel(labelIds: string[], labelId: string): string[]  // adds if absent, removes if present; length differs by exactly 1",
+          "export function labelsForTask(task: { labelIds: string[] }, all: Label[]): Label[]  // labels whose id is in task.labelIds, in all order; unknown ids skipped"
+        ],
+        "path": "lib/labels.ts",
+        "purpose": "Label management and assignment."
+      },
+      {
+        "exports": [
+          "export interface Member { id: string; name: string; role: string }  // role is a free-text job title",
+          "export function initials(name: string): string  // first letters of up to two words, uppercased; empty -> ''",
+          "export function workload(members: Member[], tasks: { assigneeId: string | null; status: string }[]): { memberId: string; open: number }[]  // one entry per member in input order; open counts tasks with that assigneeId and status !== 'Done'",
+          "export function memberById(members: Member[], id: string): Member | undefined  // undefined when no member has that id"
+        ],
+        "path": "lib/team.ts",
+        "purpose": "Team members and workload computation."
+      },
+      {
+        "exports": [
+          "export interface CalendarCell  // {date: string, inMonth: boolean, tasks: Task[]}",
+          "export function buildMonthGrid(year: number, month: number, tasks: Task[]): CalendarCell[]  // 42 cells, Sunday-first; month 1-12; month<1||>12 -> throws RangeError; tasks placed by dueDate, sorted by id",
+          "export function shiftMonth(year: number, month: number, delta: number): {year: number, month: number}  // month stays 1-12; month<1||>12 -> throws RangeError",
+          "export function monthLabel(year: number, month: number): string  // e.g. 'March 2025'; month<1||>12 -> throws RangeError"
+        ],
+        "path": "lib/calendar.ts",
+        "purpose": "Calendar grid construction from tasks."
+      },
+      {
+        "exports": [
+          "export interface BurndownPoint  // {date: string, remaining: number, ideal: number}",
+          "export function burndownSeries(tasks: Task[], startDate: string, endDate: string): BurndownPoint[]  // one point per day inclusive; startDate>endDate -> []; remaining counts tasks not done by that date; ideal linear from total to 0",
+          "export function totalScope(tasks: Task[]): number  // tasks.length; [] -> 0"
+        ],
+        "path": "lib/burndown.ts",
+        "purpose": "Burndown series computation."
+      },
+      {
+        "exports": [
+          "export interface VelocityWeek { weekStart: string; completed: number }  // weekStart ISO yyyy-mm-dd Monday",
+          "export function velocityByWeek(tasks: Task[], weeks: number): VelocityWeek[]  // length===weeks, oldest first; weeks<=0 -> []; counts tasks with status 'Done' and completedAt in week",
+          "export function averageVelocity(weeks: VelocityWeek[]): number  // [] -> 0; mean of completed rounded to 2 decimals"
+        ],
+        "path": "lib/velocity.ts",
+        "purpose": "Weekly velocity computation."
+      },
+      {
+        "exports": [
+          "export interface CycleStats { count: number; mean: number; median: number; min: number; max: number }  // all 0 when count===0",
+          "export function cycleTimeDays(task: Task): number | null  // null unless status 'Done' and both createdAt/completedAt set; else (completedAt-createdAt)/86400000 rounded 2dp",
+          "export function cycleStats(tasks: Task[]): CycleStats  // {count, mean, median, min, max}; ignores tasks with null cycleTime; count===0 -> all zeros"
+        ],
+        "path": "lib/cycle.ts",
+        "purpose": "Cycle time statistics computation."
+      },
+      {
+        "exports": [
+          "export interface SearchHit { kind: 'task' | 'project' | 'comment'; id: string; title: string; snippet: string; score: number }  // kind discriminates entity; score >= 0",
+          "export function searchAll(query: string, data: { tasks: { id: string; title: string; description: string }[]; projects: { id: string; name: string; description: string }[]; comments: { id: string; taskId: string; body: string }[] }): SearchHit[]  // query.trim()==='' -> []; case-insensitive substring; hits.length <= tasks+projects+comments; sorted by score desc",
+          "export function highlight(text: string, query: string): { text: string; match: boolean }[]  // query==='' -> [{text, match:false}]; concatenated text equals input; match true on case-insensitive occurrences"
+        ],
+        "path": "lib/search.ts",
+        "purpose": "Global search across entities."
+      },
+      {
+        "exports": [
+          "export function tasksToCsv(tasks: { id: string; title: string; status: string; priority: string; assigneeId: string | null; dueDate: string | null; labels: string[] }[]): string  // header row + one row per task; tasks.length===0 -> header only; fields with comma/quote/newline quoted and quotes doubled",
+          "export function csvEscape(value: string): string  // no special chars -> unchanged; contains , \" or \\n -> wrapped in quotes with \" doubled"
+        ],
+        "path": "lib/csv.ts",
+        "purpose": "CSV export of tasks."
+      },
+      {
+        "exports": [
+          "export type ActivityKind = 'task_created' | 'task_moved' | 'task_updated' | 'comment_added' | 'project_created' | 'project_renamed' | 'project_archived' | 'subtask_toggled'",
+          "export interface ActivityEntry { id: string; kind: ActivityKind; at: string; actor: string; summary: string; projectId: string | null; taskId: string | null }",
+          "export function deriveActivity(tasks: Task[], projects: Project[], comments: Comment[], limit: number): ActivityEntry[]  // newest first, length === min(limit, total events); limit<=0 -> []; missing project/task refs skipped",
+          "export function formatActivity(entry: ActivityEntry): string  // 'actor summary' trimmed; empty actor -> summary only"
+        ],
+        "path": "lib/activity.ts",
+        "purpose": "Recent activity feed derivation."
+      },
+      {
+        "exports": [
+          "export type Theme = 'light' | 'dark'",
+          "export interface Settings { theme: Theme; defaultProjectId: string | null }",
+          "export function defaultSettings(): Settings  // {theme: 'light', defaultProjectId: null}",
+          "export function updateSettings(current: Settings, patch: Partial<Settings>): Settings  // merged copy; invalid theme -> throws RangeError; unknown defaultProjectId kept as given"
+        ],
+        "path": "lib/settings.ts",
+        "purpose": "Theme and default project settings."
+      }
+    ],
+    "readme": true,
+    "test_files": [
+      {
+        "exports": [],
+        "path": "tests/all.test.ts",
+        "purpose": "tests for every module"
+      }
+    ]
+  },
+  "rendered": {
+    "app/globals.css": "```css\n@import \"./styles/part1.css\";\n@import \"./styles/part2.css\";\n@import \"./styles/part3.css\";\n@import \"./styles/part4.css\";\n```"
+  }
+}

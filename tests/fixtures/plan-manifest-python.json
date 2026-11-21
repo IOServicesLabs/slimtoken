@@ -1,0 +1,49 @@
+{
+  "files": [
+    {
+      "path": "expenses/models.py",
+      "purpose": "Expense record and category list.",
+      "exports": [
+        "class Expense  # dataclass: date: str, category: str, amount: float, note: str",
+        "CATEGORIES: list[str]  # [\"food\", \"rent\", \"travel\", \"other\"]"
+      ]
+    },
+    {
+      "path": "expenses/store.py",
+      "purpose": "JSON file store for expenses.",
+      "exports": [
+        "def load(path: str) -> list[Expense]",
+        "def save(path: str, expenses: list[Expense]) -> None",
+        "def add_expense(expenses: list[Expense], date: str, category: str, amount: float, note: str = \"\") -> Expense"
+      ],
+      "uses": ["expenses/models.py:Expense", "expenses/models.py:CATEGORIES"]
+    },
+    {
+      "path": "expenses/report.py",
+      "purpose": "Monthly totals per category.",
+      "exports": [
+        "def monthly_totals(expenses: list[Expense], month: str) -> dict[str, float]",
+        "def format_report(totals: dict[str, float]) -> str"
+      ],
+      "uses": ["expenses/models.py:Expense"]
+    },
+    {
+      "path": "expenses/cli.py",
+      "purpose": "Command line entry: add, list and report.",
+      "exports": [
+        "def main(argv: list[str] | None = None) -> int"
+      ],
+      "uses": ["expenses/store.py:load", "expenses/store.py:save", "expenses/store.py:add_expense", "expenses/report.py:monthly_totals", "expenses/report.py:format_report"]
+    }
+  ],
+  "test_files": [
+    {
+      "path": "tests/test_store.py",
+      "purpose": "Round-trip and add_expense validation."
+    },
+    {
+      "path": "tests/test_report.py",
+      "purpose": "Monthly totals and report formatting."
+    }
+  ]
+}

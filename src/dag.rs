@@ -54,6 +54,14 @@ pub struct Task {
     /// of the deliverable: final-output assembly skips it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub internal: bool,
+    /// Byte offset in `prompt` where the task's own tail starts after a head
+    /// that sibling tasks share. When set (at a char boundary, at most the
+    /// prompt's length), the scheduler puts the prerequisite outputs, sorted
+    /// by task id, between `prompt[..prefix_split]` and the rest, so tasks
+    /// with the same head and deps share a long identical prefix (prompt
+    /// caching). `None`: the outputs follow the whole prompt, as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix_split: Option<usize>,
 }
 
 impl Default for Task {
@@ -70,6 +78,7 @@ impl Default for Task {
             static_output: None,
             reasoning_effort: None,
             internal: false,
+            prefix_split: None,
         }
     }
 }
@@ -198,6 +207,7 @@ mod tests {
             static_output: None,
             reasoning_effort: None,
             internal: false,
+            prefix_split: None,
         }
     }
 

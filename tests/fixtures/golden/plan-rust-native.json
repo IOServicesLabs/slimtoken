@@ -1,0 +1,90 @@
+{
+  "objective": "Build a task tracker with projects, a board, a calendar and reports.",
+  "tasks": [
+    {
+      "id": "Cargo-toml",
+      "title": "Cargo.toml",
+      "prompt": "Program contracts — every module in this program. Call the other modules only through these signatures:\n- `Cargo.toml`: as the purpose describes\n- `src/lib.rs`: pub mod model;; pub mod store;; pub mod report;\n- `src/model.rs`: pub struct Expense { pub date: String, pub category: Category, pub amount_cents: i64, pub note: String }; pub enum Category { Food, Rent, Travel, Other }\n- `src/store.rs`: pub fn load(path: &Path) -> std::io::Result<Vec<Expense>>; pub fn save(path: &Path, expenses: &[Expense]) -> std::io::Result<()>\n- `src/report.rs`: pub fn monthly_totals(expenses: &[Expense], month: &str) -> BTreeMap<Category, i64>\n- `src/main.rs`: fn main()\n\nRules:\n- Output exactly one fenced code block and nothing else — no explanation, no headers.\n- Rust 2021, standard library only, compact style, no boilerplate comments.\n- Library code never panics: invalid input returns the pinned `Err` variant.\n- Return EXACTLY the fields/variants named in an export's return-shape annotation — no extra or missing members (tests assert shapes exactly).\n- `src/lib.rs` is ONLY `pub mod ...;` lines; a `src/main.rs` CLI entry parses args, calls library functions, prints the pinned output and RETURNS the exit code as `std::process::ExitCode` (0 success, 2 usage error).\n\nNow write the COMPLETE contents of `Cargo.toml` — ONLY that file.\n- Purpose: Package manifest with serde and serde_json.\n- Exports (implement exactly these): as the purpose describes",
+      "deps": [],
+      "max_tokens": 4096,
+      "temperature": 0.2,
+      "require_closed_fences": true,
+      "validate_artifact": false,
+      "static_output": "```toml\n[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n```"
+    },
+    {
+      "id": "src-lib-rs",
+      "title": "src/lib.rs",
+      "prompt": "Program contracts — every module in this program. Call the other modules only through these signatures:\n- `Cargo.toml`: as the purpose describes\n- `src/lib.rs`: pub mod model;; pub mod store;; pub mod report;\n- `src/model.rs`: pub struct Expense { pub date: String, pub category: Category, pub amount_cents: i64, pub note: String }; pub enum Category { Food, Rent, Travel, Other }\n- `src/store.rs`: pub fn load(path: &Path) -> std::io::Result<Vec<Expense>>; pub fn save(path: &Path, expenses: &[Expense]) -> std::io::Result<()>\n- `src/report.rs`: pub fn monthly_totals(expenses: &[Expense], month: &str) -> BTreeMap<Category, i64>\n- `src/main.rs`: fn main()\n\nRules:\n- Output exactly one fenced code block and nothing else — no explanation, no headers.\n- Rust 2021, standard library only, compact style, no boilerplate comments.\n- Library code never panics: invalid input returns the pinned `Err` variant.\n- Return EXACTLY the fields/variants named in an export's return-shape annotation — no extra or missing members (tests assert shapes exactly).\n- `src/lib.rs` is ONLY `pub mod ...;` lines; a `src/main.rs` CLI entry parses args, calls library functions, prints the pinned output and RETURNS the exit code as `std::process::ExitCode` (0 success, 2 usage error).\n\nNow write the COMPLETE contents of `src/lib.rs` — ONLY that file.\n- Purpose: Crate root: declares the modules.\n- Exports (implement exactly these): pub mod model;; pub mod store;; pub mod report;",
+      "deps": [],
+      "max_tokens": 4096,
+      "temperature": 0.2,
+      "require_closed_fences": true,
+      "validate_artifact": false
+    },
+    {
+      "id": "src-model-rs",
+      "title": "src/model.rs",
+      "prompt": "Program contracts — every module in this program. Call the other modules only through these signatures:\n- `Cargo.toml`: as the purpose describes\n- `src/lib.rs`: pub mod model;; pub mod store;; pub mod report;\n- `src/model.rs`: pub struct Expense { pub date: String, pub category: Category, pub amount_cents: i64, pub note: String }; pub enum Category { Food, Rent, Travel, Other }\n- `src/store.rs`: pub fn load(path: &Path) -> std::io::Result<Vec<Expense>>; pub fn save(path: &Path, expenses: &[Expense]) -> std::io::Result<()>\n- `src/report.rs`: pub fn monthly_totals(expenses: &[Expense], month: &str) -> BTreeMap<Category, i64>\n- `src/main.rs`: fn main()\n\nRules:\n- Output exactly one fenced code block and nothing else — no explanation, no headers.\n- Rust 2021, standard library only, compact style, no boilerplate comments.\n- Library code never panics: invalid input returns the pinned `Err` variant.\n- Return EXACTLY the fields/variants named in an export's return-shape annotation — no extra or missing members (tests assert shapes exactly).\n- `src/lib.rs` is ONLY `pub mod ...;` lines; a `src/main.rs` CLI entry parses args, calls library functions, prints the pinned output and RETURNS the exit code as `std::process::ExitCode` (0 success, 2 usage error).\n\nNow write the COMPLETE contents of `src/model.rs` — ONLY that file.\n- Purpose: Expense record and category enum.\n- Exports (implement exactly these): pub struct Expense { pub date: String, pub category: Category, pub amount_cents: i64, pub note: String }; pub enum Category { Food, Rent, Travel, Other }",
+      "deps": [],
+      "max_tokens": 4096,
+      "temperature": 0.2,
+      "require_closed_fences": true,
+      "validate_artifact": false
+    },
+    {
+      "id": "src-store-rs",
+      "title": "src/store.rs",
+      "prompt": "Program contracts — every module in this program. Call the other modules only through these signatures:\n- `Cargo.toml`: as the purpose describes\n- `src/lib.rs`: pub mod model;; pub mod store;; pub mod report;\n- `src/model.rs`: pub struct Expense { pub date: String, pub category: Category, pub amount_cents: i64, pub note: String }; pub enum Category { Food, Rent, Travel, Other }\n- `src/store.rs`: pub fn load(path: &Path) -> std::io::Result<Vec<Expense>>; pub fn save(path: &Path, expenses: &[Expense]) -> std::io::Result<()>\n- `src/report.rs`: pub fn monthly_totals(expenses: &[Expense], month: &str) -> BTreeMap<Category, i64>\n- `src/main.rs`: fn main()\n\nRules:\n- Output exactly one fenced code block and nothing else — no explanation, no headers.\n- Rust 2021, standard library only, compact style, no boilerplate comments.\n- Library code never panics: invalid input returns the pinned `Err` variant.\n- Return EXACTLY the fields/variants named in an export's return-shape annotation — no extra or missing members (tests assert shapes exactly).\n- `src/lib.rs` is ONLY `pub mod ...;` lines; a `src/main.rs` CLI entry parses args, calls library functions, prints the pinned output and RETURNS the exit code as `std::process::ExitCode` (0 success, 2 usage error).\n\nNow write the COMPLETE contents of `src/store.rs` — ONLY that file.\n- Purpose: JSON file store for expenses.\n- Exports (implement exactly these): pub fn load(path: &Path) -> std::io::Result<Vec<Expense>>; pub fn save(path: &Path, expenses: &[Expense]) -> std::io::Result<()>\n- Calls (wire each of these into this file's behavior; import them from their files): src/model.rs:Expense",
+      "deps": [],
+      "max_tokens": 4096,
+      "temperature": 0.2,
+      "require_closed_fences": true,
+      "validate_artifact": false
+    },
+    {
+      "id": "src-report-rs",
+      "title": "src/report.rs",
+      "prompt": "Program contracts — every module in this program. Call the other modules only through these signatures:\n- `Cargo.toml`: as the purpose describes\n- `src/lib.rs`: pub mod model;; pub mod store;; pub mod report;\n- `src/model.rs`: pub struct Expense { pub date: String, pub category: Category, pub amount_cents: i64, pub note: String }; pub enum Category { Food, Rent, Travel, Other }\n- `src/store.rs`: pub fn load(path: &Path) -> std::io::Result<Vec<Expense>>; pub fn save(path: &Path, expenses: &[Expense]) -> std::io::Result<()>\n- `src/report.rs`: pub fn monthly_totals(expenses: &[Expense], month: &str) -> BTreeMap<Category, i64>\n- `src/main.rs`: fn main()\n\nRules:\n- Output exactly one fenced code block and nothing else — no explanation, no headers.\n- Rust 2021, standard library only, compact style, no boilerplate comments.\n- Library code never panics: invalid input returns the pinned `Err` variant.\n- Return EXACTLY the fields/variants named in an export's return-shape annotation — no extra or missing members (tests assert shapes exactly).\n- `src/lib.rs` is ONLY `pub mod ...;` lines; a `src/main.rs` CLI entry parses args, calls library functions, prints the pinned output and RETURNS the exit code as `std::process::ExitCode` (0 success, 2 usage error).\n\nNow write the COMPLETE contents of `src/report.rs` — ONLY that file.\n- Purpose: Monthly totals per category.\n- Exports (implement exactly these): pub fn monthly_totals(expenses: &[Expense], month: &str) -> BTreeMap<Category, i64>\n- Calls (wire each of these into this file's behavior; import them from their files): src/model.rs:Expense, src/model.rs:Category",
+      "deps": [],
+      "max_tokens": 4096,
+      "temperature": 0.2,
+      "require_closed_fences": true,
+      "validate_artifact": false
+    },
+    {
+      "id": "src-main-rs",
+      "title": "src/main.rs",
+      "prompt": "Program contracts — every module in this program. Call the other modules only through these signatures:\n- `Cargo.toml`: as the purpose describes\n- `src/lib.rs`: pub mod model;; pub mod store;; pub mod report;\n- `src/model.rs`: pub struct Expense { pub date: String, pub category: Category, pub amount_cents: i64, pub note: String }; pub enum Category { Food, Rent, Travel, Other }\n- `src/store.rs`: pub fn load(path: &Path) -> std::io::Result<Vec<Expense>>; pub fn save(path: &Path, expenses: &[Expense]) -> std::io::Result<()>\n- `src/report.rs`: pub fn monthly_totals(expenses: &[Expense], month: &str) -> BTreeMap<Category, i64>\n- `src/main.rs`: fn main()\n\nRules:\n- Output exactly one fenced code block and nothing else — no explanation, no headers.\n- Rust 2021, standard library only, compact style, no boilerplate comments.\n- Library code never panics: invalid input returns the pinned `Err` variant.\n- Return EXACTLY the fields/variants named in an export's return-shape annotation — no extra or missing members (tests assert shapes exactly).\n- `src/lib.rs` is ONLY `pub mod ...;` lines; a `src/main.rs` CLI entry parses args, calls library functions, prints the pinned output and RETURNS the exit code as `std::process::ExitCode` (0 success, 2 usage error).\n\nNow write the COMPLETE contents of `src/main.rs` — ONLY that file.\n- Purpose: Command line entry: add, list and report.\n- Exports (implement exactly these): fn main()\n- Calls (wire each of these into this file's behavior; import them from their files): src/store.rs:load, src/store.rs:save, src/report.rs:monthly_totals",
+      "deps": [],
+      "max_tokens": 4096,
+      "temperature": 0.2,
+      "require_closed_fences": true,
+      "validate_artifact": false
+    },
+    {
+      "id": "tests-01_Cargo-toml-rs",
+      "title": "tests/01_Cargo.toml.rs",
+      "prompt": "Module contracts — use ONLY these signatures; you cannot see the implementations:\n- `Cargo.toml`: as the purpose describes\n- `src/lib.rs`: pub mod model;; pub mod store;; pub mod report;\n- `src/model.rs`: pub struct Expense { pub date: String, pub category: Category, pub amount_cents: i64, pub note: String }; pub enum Category { Food, Rent, Travel, Other }\n- `src/store.rs`: pub fn load(path: &Path) -> std::io::Result<Vec<Expense>>; pub fn save(path: &Path, expenses: &[Expense]) -> std::io::Result<()>\n- `src/report.rs`: pub fn monthly_totals(expenses: &[Expense], month: &str) -> BTreeMap<Category, i64>\n- `src/main.rs`: fn main()\n\nRules:\n- Output exactly one fenced code block and nothing else.\n- Each test shard is its own integration crate under tests/, so import library items as `use app::<module>::<fn>;`.\n- Cover happy paths, invalid input (the pinned `Err` cases) and edge cases; never write placeholder or tautological tests.\n- Where an export annotates its return shape, assert it exactly (assert_eq! on the whole value).\n- Keep tests compact.\n\nWrite a cargo test suite saved as `tests/01_Cargo.toml.rs` covering ONLY these modules: `Cargo.toml`, `src/lib.rs`, `src/model.rs`. Other suites cover the remaining modules. Write about 8 focused tests.",
+      "deps": [],
+      "max_tokens": 8192,
+      "temperature": 0.2,
+      "require_closed_fences": true,
+      "validate_artifact": false
+    },
+    {
+      "id": "tests-02_store-rs",
+      "title": "tests/02_store.rs",
+      "prompt": "Module contracts — use ONLY these signatures; you cannot see the implementations:\n- `Cargo.toml`: as the purpose describes\n- `src/lib.rs`: pub mod model;; pub mod store;; pub mod report;\n- `src/model.rs`: pub struct Expense { pub date: String, pub category: Category, pub amount_cents: i64, pub note: String }; pub enum Category { Food, Rent, Travel, Other }\n- `src/store.rs`: pub fn load(path: &Path) -> std::io::Result<Vec<Expense>>; pub fn save(path: &Path, expenses: &[Expense]) -> std::io::Result<()>\n- `src/report.rs`: pub fn monthly_totals(expenses: &[Expense], month: &str) -> BTreeMap<Category, i64>\n- `src/main.rs`: fn main()\n\nRules:\n- Output exactly one fenced code block and nothing else.\n- Each test shard is its own integration crate under tests/, so import library items as `use app::<module>::<fn>;`.\n- Cover happy paths, invalid input (the pinned `Err` cases) and edge cases; never write placeholder or tautological tests.\n- Where an export annotates its return shape, assert it exactly (assert_eq! on the whole value).\n- Keep tests compact.\n\nWrite a cargo test suite saved as `tests/02_store.rs` covering ONLY these modules: `src/store.rs`, `src/report.rs`, `src/main.rs`. Other suites cover the remaining modules. Write about 8 focused tests.",
+      "deps": [],
+      "max_tokens": 8192,
+      "temperature": 0.2,
+      "require_closed_fences": true,
+      "validate_artifact": false
+    }
+  ],
+  "cache_primes": [
+    "Program contracts — every module in this program. Call the other modules only through these signatures:\n- `Cargo.toml`: as the purpose describes\n- `src/lib.rs`: pub mod model;; pub mod store;; pub mod report;\n- `src/model.rs`: pub struct Expense { pub date: String, pub category: Category, pub amount_cents: i64, pub note: String }; pub enum Category { Food, Rent, Travel, Other }\n- `src/store.rs`: pub fn load(path: &Path) -> std::io::Result<Vec<Expense>>; pub fn save(path: &Path, expenses: &[Expense]) -> std::io::Result<()>\n- `src/report.rs`: pub fn monthly_totals(expenses: &[Expense], month: &str) -> BTreeMap<Category, i64>\n- `src/main.rs`: fn main()\n\nRules:\n- Output exactly one fenced code block and nothing else — no explanation, no headers.\n- Rust 2021, standard library only, compact style, no boilerplate comments.\n- Library code never panics: invalid input returns the pinned `Err` variant.\n- Return EXACTLY the fields/variants named in an export's return-shape annotation — no extra or missing members (tests assert shapes exactly).\n- `src/lib.rs` is ONLY `pub mod ...;` lines; a `src/main.rs` CLI entry parses args, calls library functions, prints the pinned output and RETURNS the exit code as `std::process::ExitCode` (0 success, 2 usage error).\n\n",
+    "Module contracts — use ONLY these signatures; you cannot see the implementations:\n- `Cargo.toml`: as the purpose describes\n- `src/lib.rs`: pub mod model;; pub mod store;; pub mod report;\n- `src/model.rs`: pub struct Expense { pub date: String, pub category: Category, pub amount_cents: i64, pub note: String }; pub enum Category { Food, Rent, Travel, Other }\n- `src/store.rs`: pub fn load(path: &Path) -> std::io::Result<Vec<Expense>>; pub fn save(path: &Path, expenses: &[Expense]) -> std::io::Result<()>\n- `src/report.rs`: pub fn monthly_totals(expenses: &[Expense], month: &str) -> BTreeMap<Category, i64>\n- `src/main.rs`: fn main()\n\nRules:\n- Output exactly one fenced code block and nothing else.\n- Each test shard is its own integration crate under tests/, so import library items as `use app::<module>::<fn>;`.\n- Cover happy paths, invalid input (the pinned `Err` cases) and edge cases; never write placeholder or tautological tests.\n- Where an export annotates its return shape, assert it exactly (assert_eq! on the whole value).\n- Keep tests compact.\n\n"
+  ]
+}

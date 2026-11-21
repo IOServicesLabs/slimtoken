@@ -1,0 +1,15 @@
+Build "Fleet", a complete vehicle maintenance tracking web app for a small company with Next.js (App Router) and TypeScript. No backend: all data lives in local storage, with realistic seed data on first load. No UI or chart libraries: plain React, one global stylesheet, charts drawn with inline SVG.
+
+Pages:
+- Overview: vehicles due for service (by date or by mileage), total maintenance cost this year, and a cost per vehicle chart.
+- Vehicles: list with make, model, plate, current mileage and status; create, edit, retire.
+- Vehicle detail: service history, fuel log with consumption per fill-up, mileage updates, and the next service due.
+- Service schedule: service types with an interval in months and in kilometres; a service is due at whichever comes first.
+- Log service: record a service for a vehicle with date, mileage, cost and notes; it resets that service's due point.
+- Fuel: log fill-ups (litres, cost, odometer) and show average consumption per vehicle.
+- Reports: cost per month and per category, and CSV export of all services.
+- Settings: distance unit (km, miles), currency, theme (light, dark), and reset demo data.
+
+Put all domain logic in pure lib modules: vehicles, service types, service records, due calculation, fuel log, consumption, costs, reports, CSV export, storage, seed data, money formatting, unit conversion, date helpers and id generation. Include Vitest tests for the lib modules and a README.
+
+Quality bar: every page is complete and usable, with real controls wired to the lib modules. No stubs, no placeholders, no TODO comments, and no import of a file that you do not write. The project must pass `npm install`, `npm run build` (type check included) and `npm test`.

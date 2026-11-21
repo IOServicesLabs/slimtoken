@@ -174,7 +174,9 @@ file that git tracks.
 | `--route` | `auto` | `auto`, `direct` or `wave` |
 | `--profile` | `auto` | Stack profile: `auto`, `python` or `nextjs` |
 | `--sink` | `model` | `assemble` joins all files into `final-output.md` with no model call. `model` merges them with one model call. |
-| `--test-cmd` | — | Command that checks the build; failures start repairs |
+| `--check-cmd` (`--test-cmd`) | — | Command that checks the build; failures start repairs |
+| `--out-dir` | — | Also write the project files to this directory |
+| `--repair-rounds` | 0 | With `--check-cmd`: check and repair for up to N rounds (`repair::check_and_repair`) instead of one reconcile round |
 | `--reconcile-edits` | `true` | Repairs send search-and-replace edits |
 | `--max-tasks` | `48` | Upper limit of files in the plan |
 | `--max-concurrency` | `128` | Upper limit of streams at the same time |
@@ -187,6 +189,18 @@ file that git tracks.
 `slimtoken ab` compares two configurations in paired rounds. It runs
 the arms in alternate order and records wall time, tokens and test
 results per round. Do not merge a change that has no A/B evidence.
+
+## See it side by side
+
+`bench/showdown` is a terminal benchmark. It runs one model stream and
+a SlimToken wave on the same objective, side by side. It then builds,
+tests and opens the pages of the two apps, and it can start both apps in
+your browser. See
+[bench/showdown/README.md](bench/showdown/README.md).
+
+```bash
+cd bench/showdown && cargo run --release -- run
+```
 
 ## Test
 
@@ -214,6 +228,7 @@ src/
 profiles/        Shipped stack profile library (fastapi)
 sidecars/        Optional gate packs (see sidecars/README.md)
 examples/        Example plan and REST request
+bench/showdown/  Side-by-side terminal benchmark (separate crate)
 ```
 
 ## Safety

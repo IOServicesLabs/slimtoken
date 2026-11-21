@@ -1,0 +1,14 @@
+Build "Garden", a complete garden planner web app with Next.js (App Router) and TypeScript. No backend: all data lives in local storage, with realistic seed data on first load. No UI or chart libraries: plain React, one global stylesheet, charts drawn with inline SVG.
+
+Pages:
+- Today: plants that need watering or fertilizing today (each plant has its own interval), overdue care, and upcoming harvests.
+- Beds: garden beds as a grid of cells; place plants in cells, move and remove them; create, rename, delete beds.
+- Plants: catalog of plant varieties with spacing, days to harvest, watering interval and sun needs; create and edit.
+- Plant detail: a planted instance with planting date, care log (watered, fertilized, harvested with amount), and expected harvest date.
+- Calendar: month view of planting dates, expected harvests and care due dates, previous and next month.
+- Harvest log: harvests per variety with amounts, and a harvest per month chart.
+- Settings: frost dates, units (metric, imperial), theme (light, dark), and reset demo data.
+
+Put all domain logic in pure lib modules: beds and grid placement, varieties, plantings, care schedule, care log, harvests, calendar grid, stats, storage, seed data, unit conversion, date helpers and id generation. Include Vitest tests for the lib modules and a README.
+
+Quality bar: every page is complete and usable, with real controls wired to the lib modules. No stubs, no placeholders, no TODO comments, and no import of a file that you do not write. The project must pass `npm install`, `npm run build` (type check included) and `npm test`.

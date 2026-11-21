@@ -112,6 +112,38 @@ impl std::fmt::Debug for FailoverClient {
 #[async_trait]
 impl ModelClient for FailoverClient {
     async fn complete(&self, request: CompletionRequest) -> Result<Completion> {
+        self.routed(move |client| {
+            let request = request.clone();
+            async move { client.complete(request).await }
+        })
+        .await
+    }
+
+    /// The continuation takes the route a request would take now (the
+    /// active provider), through that provider's own `continue_completion`,
+    /// so its prefix mode is kept; its errors count toward the drain.
+    async fn continue_completion(
+        &self,
+        request: CompletionRequest,
+        partial: String,
+    ) -> Result<crate::continuation::Continued> {
+        self.routed(move |client| {
+            let (request, partial) = (request.clone(), partial.clone());
+            async move { client.continue_completion(request, partial).await }
+        })
+        .await
+    }
+}
+
+impl FailoverClient {
+    /// `call` on the primary or the fallback, by the drain state: see the
+    /// module documentation.
+    async fn routed<T, F, Fut>(&self, call: F) -> Result<T>
+    where
+        F: Fn(Arc<dyn ModelClient>) -> Fut + Send + Sync,
+        Fut: std::future::Future<Output = Result<T>> + Send,
+        T: Send,
+    {
         enum Route {
             Primary,
             Probe,
@@ -139,14 +171,14 @@ impl ModelClient for FailoverClient {
             // returns to the scheduler, which retries against us and lands
             // here again. A stuck-fallback run surfaces as failed tasks
             // instead of flapping between two dead providers.
-            return self.fallback.complete(request).await;
+            return call(self.fallback.clone()).await;
         }
         // Clears the probe flag however this call ends, including a caller
         // that drops the future mid-probe.
         let _probe = matches!(route, Route::Probe).then_some(ProbeGuard(&self.inner));
 
         self.inner.lock().unwrap().stats.primary_calls += 1;
-        let primary = self.primary.complete(request.clone());
+        let primary = call(self.primary.clone());
         let outcome = match self.config.call_timeout {
             // The scheduler's own timeout DROPS this future, so a hung
             // primary would never reach the error arm below; bounding the
@@ -194,7 +226,7 @@ impl ModelClient for FailoverClient {
                     // Serve this very request on the fallback instead of
                     // returning the error: the caller gets a successful
                     // completion, just from the other provider.
-                    return self.fallback.complete(request).await;
+                    return call(self.fallback.clone()).await;
                 }
                 Err(error)
             }
@@ -338,6 +370,7 @@ mod tests {
                 require_closed_fences: false,
                 static_output: None,
                 internal: false,
+                prefix_split: None,
             })
             .collect();
         let plan = Plan {

@@ -7,8 +7,9 @@
 //! touching explicit host choices. Presets are data plus small helpers; the
 //! engine core stays provider-neutral (core stays generic).
 
-use crate::architect::{ArchitectOptions, SINGLE_RESPONSE_THRESHOLD_TOKENS};
+use crate::architect::{ArchitectOptions, PlanOptions, SINGLE_RESPONSE_THRESHOLD_TOKENS};
 use crate::controller::{ControllerConfig, DEFAULT_COLD_START_BURST_CAP};
+use crate::profile::Profile;
 use crate::scheduler::SchedulerConfig;
 
 /// One provider's defaults. Measured presets cite their ABBA run in the field
@@ -37,6 +38,17 @@ pub struct ProviderPreset {
     /// 12.6 vs 15.3s. Muse keeps the conservative default: it sheds wide
     /// cold bursts with empty completions.
     pub cold_burst_cap: usize,
+    /// Cap of the start that counts the ready tasks
+    /// (`ControllerConfig.cold_hint_cap`). Zero turns that start off, and the
+    /// wave then starts at `start_percent` of the ceiling, up to
+    /// `cold_burst_cap`.
+    pub cold_hint_cap: usize,
+    /// Share of the ceiling that the limit starts at
+    /// (`ControllerConfig.start_percent`).
+    pub start_percent: u32,
+    /// First-token watchdog factor (`SchedulerConfig.first_token_watchdog`).
+    /// `None` leaves the watchdog off.
+    pub first_token_watchdog: Option<u32>,
     /// Size-router cutoff: estimated deliverables above this take the
     /// manifest + wave, below go out as one direct call. ABBA run
     /// (DeepSeek): the wave beat one direct call 2-3x on wall at +0.4-2.9%
@@ -56,6 +68,9 @@ pub const MUSE_PRESET: ProviderPreset = ProviderPreset {
     architect_effort: "minimal",
     architect_schema: true,
     cold_burst_cap: DEFAULT_COLD_START_BURST_CAP,
+    cold_hint_cap: 16,
+    start_percent: 25,
+    first_token_watchdog: None,
     single_response_threshold: SINGLE_RESPONSE_THRESHOLD_TOKENS,
     key_env: "MUSE_API_KEY",
 };
@@ -63,6 +78,15 @@ pub const MUSE_PRESET: ProviderPreset = ProviderPreset {
 /// api.deepseek.com, deepseek-flash. Effort "none" = 0 reasoning tokens
 /// (its fastest measured mode). Preset disables architect schema (rejected).
 /// ABBA runs.
+///
+/// The wave starts wide: 64 streams at once, with no count of the ready
+/// tasks. A staged plan has few tasks ready at the start (the types files),
+/// so a start that counts them begins near 5 and the next stage waits in a
+/// queue. Measured in `bench/showdown` on a 37-file plan: the writing stage
+/// took 14.5 s with the old start and 12.3 s with this one. The limit still
+/// goes down when the provider shows overload. The watchdog starts a request
+/// again when its first token is three times later than the median (two such
+/// requests of 18 s and 24 s in about 60 runs; its effect is not measured).
 pub const DEEPSEEK_PRESET: ProviderPreset = ProviderPreset {
     name: "deepseek",
     base_url: "https://api.deepseek.com/v1",
@@ -70,7 +94,10 @@ pub const DEEPSEEK_PRESET: ProviderPreset = ProviderPreset {
     worker_effort: "none",
     architect_effort: "none",
     architect_schema: false,
-    cold_burst_cap: 16,
+    cold_burst_cap: 64,
+    cold_hint_cap: 0,
+    start_percent: 100,
+    first_token_watchdog: Some(3),
     single_response_threshold: 10_000,
     key_env: "DEEPSEEK_API_KEY",
 };
@@ -88,9 +115,16 @@ pub const ANTHROPIC_PRESET: ProviderPreset = ProviderPreset {
     architect_effort: "low",
     architect_schema: false,
     cold_burst_cap: 8,
+    cold_hint_cap: 16,
+    start_percent: 25,
+    first_token_watchdog: None,
     single_response_threshold: SINGLE_RESPONSE_THRESHOLD_TOKENS,
     key_env: "ANTHROPIC_API_KEY",
 };
+
+/// Test-shard floor `apply_plan` sets for a measured staged stack: the
+/// bench spreads the tests of the Next.js app over six shards.
+pub const STAGED_TEST_SHARDS: usize = 6;
 
 /// All known presets. Muse and DeepSeek presets carry ABBA-measured values.
 /// The Anthropic preset pins conservative starting points: its knobs are not
@@ -129,14 +163,44 @@ impl ProviderPreset {
     }
 
     /// Stamp the measured worker knobs onto a scheduler config. A host-set
-    /// worker effort or a custom cold burst cap is left alone; defaults are
+    /// worker effort, start setting or watchdog is left alone; defaults are
     /// replaced by the preset's measured values.
     pub fn apply_scheduler(&self, config: &mut SchedulerConfig) {
         if config.reasoning_effort.is_none() {
             config.reasoning_effort = Some(self.worker_effort.to_string());
         }
-        if config.controller.cold_burst_cap == DEFAULT_COLD_START_BURST_CAP {
-            config.controller.cold_burst_cap = self.cold_burst_cap;
+        self.apply_controller(&mut config.controller);
+        if config.first_token_watchdog.is_none() {
+            config.first_token_watchdog = self.first_token_watchdog.map(f64::from);
+        }
+    }
+
+    /// Stamp the measured plan shape onto plan options. Only the DeepSeek
+    /// preset on a profile whose staging is measured (`staging.measured`)
+    /// turns on the staged wave, one owner per shared type, the profile's
+    /// measured manifest fixups (`tidy`), the split of long files (`split`)
+    /// and a floor of `STAGED_TEST_SHARDS` test shards; each field changes only while it
+    /// still holds the library default, so `staged: false` cannot opt out
+    /// (it is the default). Every other pair is left as is.
+    pub fn apply_plan(&self, options: &mut PlanOptions, profile: &Profile) {
+        if !profile.staging.measured || self.name != DEEPSEEK_PRESET.name {
+            return;
+        }
+        let default = PlanOptions::default();
+        if options.staged == default.staged {
+            options.staged = true;
+        }
+        if options.one_type_owner == default.one_type_owner {
+            options.one_type_owner = true;
+        }
+        if options.tidy == default.tidy {
+            options.tidy = true;
+        }
+        if options.split == default.split {
+            options.split = true;
+        }
+        if options.min_test_shards == default.min_test_shards {
+            options.min_test_shards = STAGED_TEST_SHARDS;
         }
     }
 
@@ -149,10 +213,18 @@ impl ProviderPreset {
 /// Controller knob passthrough so hosts can read the measured burst cap
 /// without importing the controller module directly.
 impl ProviderPreset {
-    /// The cold-start burst cap as a `ControllerConfig` patch target.
+    /// The start settings as a `ControllerConfig` patch target. Each one
+    /// replaces only a value that is still the library default.
     pub fn apply_controller(&self, controller: &mut ControllerConfig) {
-        if controller.cold_burst_cap == DEFAULT_COLD_START_BURST_CAP {
+        let default = ControllerConfig::default();
+        if controller.cold_burst_cap == default.cold_burst_cap {
             controller.cold_burst_cap = self.cold_burst_cap;
+        }
+        if controller.cold_hint_cap == default.cold_hint_cap {
+            controller.cold_hint_cap = self.cold_hint_cap;
+        }
+        if controller.start_percent == default.start_percent {
+            controller.start_percent = self.start_percent;
         }
     }
 }
@@ -193,7 +265,14 @@ mod tests {
             !DEEPSEEK_PRESET.architect_schema,
             "deepseek rejects json_schema"
         );
-        assert_eq!(DEEPSEEK_PRESET.cold_burst_cap, 16);
+        assert_eq!(DEEPSEEK_PRESET.cold_burst_cap, 64);
+        assert_eq!(DEEPSEEK_PRESET.cold_hint_cap, 0);
+        assert_eq!(DEEPSEEK_PRESET.start_percent, 100);
+        assert_eq!(DEEPSEEK_PRESET.first_token_watchdog, Some(3));
+        assert_eq!(
+            MUSE_PRESET.first_token_watchdog, None,
+            "not measured on Muse"
+        );
         assert!(DEEPSEEK_PRESET.single_response_threshold < 13_000);
         assert_eq!(DEEPSEEK_PRESET.worker_effort, "none");
 
@@ -239,7 +318,11 @@ mod tests {
         assert!(config.reasoning_effort.is_none());
         DEEPSEEK_PRESET.apply_scheduler(&mut config);
         assert_eq!(config.reasoning_effort.as_deref(), Some("none"));
-        assert_eq!(config.controller.cold_burst_cap, 16);
+        assert_eq!(config.controller.cold_burst_cap, 64);
+        assert_eq!(config.controller.cold_hint_cap, 0);
+        assert_eq!(config.controller.start_percent, 100);
+        assert_eq!(config.first_token_watchdog, Some(3.0));
+        config.validate().expect("the preset gives a valid config");
 
         // Host-set values win.
         let mut host = SchedulerConfig {
@@ -247,7 +330,11 @@ mod tests {
             ..SchedulerConfig::default()
         };
         host.controller.cold_burst_cap = 32;
-        MUSE_PRESET.apply_scheduler(&mut host);
+        host.controller.cold_hint_cap = 24;
+        host.first_token_watchdog = Some(2.0);
+        DEEPSEEK_PRESET.apply_scheduler(&mut host);
+        assert_eq!(host.controller.cold_hint_cap, 24, "custom hint cap wins");
+        assert_eq!(host.first_token_watchdog, Some(2.0), "custom watchdog wins");
         assert_eq!(host.reasoning_effort.as_deref(), Some("low"));
         assert_eq!(host.controller.cold_burst_cap, 32, "custom burst cap wins");
     }
@@ -256,12 +343,77 @@ mod tests {
     fn apply_controller_patches_only_the_default_cap() {
         let mut controller = ControllerConfig::default();
         DEEPSEEK_PRESET.apply_controller(&mut controller);
-        assert_eq!(controller.cold_burst_cap, 16);
+        assert_eq!(controller.cold_burst_cap, 64);
+        let mut muse = ControllerConfig::default();
+        MUSE_PRESET.apply_controller(&mut muse);
+        assert_eq!(muse.cold_hint_cap, 16);
+        assert_eq!(muse.start_percent, 25);
         let mut custom = ControllerConfig {
             cold_burst_cap: 48,
             ..ControllerConfig::default()
         };
         MUSE_PRESET.apply_controller(&mut custom);
         assert_eq!(custom.cold_burst_cap, 48);
+    }
+
+    /// NEXTJS with its staging marked as measured, for the `apply_plan` gate.
+    fn measured_nextjs() -> Profile {
+        Profile {
+            staging: crate::profile::Staging {
+                measured: true,
+                ..crate::profile::NEXTJS.staging
+            },
+            ..crate::profile::NEXTJS
+        }
+    }
+
+    #[test]
+    fn apply_plan_stages_only_deepseek_on_a_measured_profile() {
+        let mut options = PlanOptions::default();
+        DEEPSEEK_PRESET.apply_plan(&mut options, &measured_nextjs());
+        assert!(options.staged);
+        assert!(options.one_type_owner);
+        assert!(options.tidy);
+        assert!(options.split);
+        assert_eq!(options.min_test_shards, STAGED_TEST_SHARDS);
+        assert!(!options.uses_deps, "not measured yet");
+        assert_eq!(options.today, None, "the date is the host's choice");
+
+        for preset in [MUSE_PRESET, ANTHROPIC_PRESET] {
+            let mut options = PlanOptions::default();
+            preset.apply_plan(&mut options, &measured_nextjs());
+            assert_eq!(options, PlanOptions::default(), "{}", preset.name);
+        }
+        // No built-in profile is measured on the engine yet, so the CLI
+        // plans as before with every preset.
+        for profile in crate::profile::PROFILES {
+            assert!(!profile.staging.measured, "{}", profile.name);
+            let mut options = PlanOptions::default();
+            DEEPSEEK_PRESET.apply_plan(&mut options, profile);
+            assert_eq!(options, PlanOptions::default(), "{}", profile.name);
+        }
+    }
+
+    #[test]
+    fn apply_plan_does_nothing_for_python() {
+        let mut options = PlanOptions::default();
+        for preset in PROVIDER_PRESETS {
+            preset.apply_plan(&mut options, &crate::profile::PYTHON);
+        }
+        assert_eq!(options, PlanOptions::default());
+    }
+
+    #[test]
+    fn apply_plan_keeps_explicit_host_values() {
+        let mut options = PlanOptions {
+            min_test_shards: 3,
+            density: true,
+            ..PlanOptions::default()
+        };
+        DEEPSEEK_PRESET.apply_plan(&mut options, &measured_nextjs());
+        assert_eq!(options.min_test_shards, 3, "host floor wins");
+        assert!(options.density);
+        assert!(options.staged);
+        assert_eq!(options.quota_pct, PlanOptions::default().quota_pct);
     }
 }

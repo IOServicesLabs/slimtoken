@@ -1,6 +1,6 @@
 //! Python 3.10 + pytest: the profile the planner was first tuned on.
 
-use super::Profile;
+use super::{keep, Profile, NO_STAGING, PYTHON_REPAIR_HOOKS};
 use crate::architect::Manifest;
 
 pub static PYTHON: Profile = Profile {
@@ -67,7 +67,13 @@ pub static PYTHON: Profile = Profile {
     scaffold: |_| None,
     normalize_skeleton: package_if_shadowing,
     normalize_manifest: package_if_shadowing,
+    tidy_manifest: keep,
     readme_sections,
+    // No staged wave. `reconcile` tells a suite from a module with its own
+    // `reconcile::default_test_staging`, so a file profile based on python
+    // inherits no test globs.
+    staging: NO_STAGING,
+    repair: PYTHON_REPAIR_HOOKS,
 };
 
 /// Contracts pin edge behavior (`ArchitectOptions::edges`). Module and test
@@ -93,7 +99,8 @@ fn readme_sections(manifest: &Manifest) -> String {
         Some(file) => format!("python {} --help", file.path),
         None => "python -c \"import ...\"  # import the modules above".to_string(),
     };
-    format!("\n## Run\n\n```\n{run}\n```\n\n## Tests\n\n```\npython -m pytest -q\n```\n```")
+    // `~~~` fences: the README is one ```markdown block (see `render_readme`).
+    format!("\n## Run\n\n~~~bash\n{run}\n~~~\n\n## Tests\n\n~~~bash\npython -m pytest -q\n~~~\n")
 }
 
 /// Standard-library module names a project module must not shadow: a
